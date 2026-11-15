@@ -80,7 +80,10 @@ h2{color:var(--brand);font-size:24px;margin:8px 0 0}
 .here .n{align-self:center;padding-left:12px;font-weight:700;color:var(--brand);font-size:15px}
 .link{background:none;border:0;color:var(--brand);font-weight:700;text-decoration:underline;padding:10px 16px}
 .note{color:var(--muted);font-size:14px}
-.err{border-color:var(--bad);color:var(--bad);font-weight:600}
+.alert{border:2px solid var(--bad);background:#fff4f2;color:#7a1a14;font-weight:600}
+.alert a{display:inline-block;margin-top:8px;background:var(--bad);color:#fff;padding:8px 12px;border-radius:8px;text-decoration:none;font-weight:700}
+.leave{margin-top:10px;font-weight:700;padding:7px 10px;border-radius:8px;background:#eef0f6}
+.leave.good{background:#e6f4ea}.leave.warn{background:#fff1dd}.leave.bad{background:#fde9e7}
 #map{height:300px;border-radius:14px;border:1px solid var(--rule);display:none}
 footer{color:var(--muted);font-size:13px;text-align:center}
 footer a{color:var(--brand)}
@@ -95,15 +98,15 @@ var API="https://bustimes.org/";
 var SERVICES=[{id:54596,line:"157"},{id:54597,line:"357"}];
 var BBOX="ymax=50.73&xmax=-3.18&ymin=50.58&xmin=-3.46";
 var PLACES=[
-  {id:"bud",label:"Budleigh Salterton Public Hall",short:"Budleigh Public Hall",match:"public hall"},
-  {id:"exm",label:"Exmouth Hospital Corner",short:"Hospital Corner",match:"hospital corner"}
+  {id:"bud",label:"Budleigh Salterton Public Hall",short:"Budleigh Public Hall",match:"public hall",gm:"Public Hall bus stop, Station Road, Budleigh Salterton"},
+  {id:"exm",label:"Exmouth Hospital Corner",short:"Hospital Corner",match:"hospital corner",gm:"Hospital Corner bus stop, Salterton Road, Exmouth"}
 ];
 var S={from:"bud",to:"exm",day:0,view:"home",sel:null,pin:null,lists:null,cands:[],used:0,matches:[],
-  byTrip:{},byBlock:{},passed:{},lastNext:{},updated:null,err:null,loading:false,showAll:false,map:false,liveOk:false};
+  byTrip:{},byBlock:{},passed:{},lastNext:{},updated:null,err:null,loading:false,showAll:false,map:false,liveOk:false,term:true,pos:null,geoErr:null,crash:null};
 var details={};
 function ls(k,v){try{if(v===undefined)return JSON.parse(localStorage.getItem(k));localStorage.setItem(k,JSON.stringify(v));}catch(e){return null;}}
-var saved=ls("bl_state");if(saved){if(saved.from&&saved.to){S.from=saved.from;S.to=saved.to;}S.pin=saved.pin||null;}
-function save(){ls("bl_state",{from:S.from,to:S.to,pin:S.pin});}
+var saved=ls("bl_state");if(saved){if(saved.from&&saved.to){S.from=saved.from;S.to=saved.to;}S.pin=saved.pin||null;if(saved.term===false)S.term=false;}
+function save(){ls("bl_state",{from:S.from,to:S.to,pin:S.pin,term:S.term});}
 function place(id){for(var i=0;i<PLACES.length;i++)if(PLACES[i].id===id)return PLACES[i];}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
 function hm(t){if(!t)return null;var p=t.split(":");return (+p[0])*60+(+p[1]);}
@@ -111,8 +114,10 @@ function fmt(m){m=Math.round(m);var h=Math.floor(m/60)%24,mm=((m%60)+60)%60;retu
 function nowMin(){var d=new Date();return d.getHours()*60+d.getMinutes()+d.getSeconds()/60;}
 function clock(d){return fmt(d.getHours()*60+d.getMinutes());}
 function theDate(){var d=new Date();d.setDate(d.getDate()+S.day);return d;}
-function groups(){var w=theDate().getDay();return w===0?["5"]:w===6?["3"]:["1","6"];}
-function getJSON(path){return fetch(API+path).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});}
+function groups(){var w=theDate().getDay();return w===0?["5"]:w===6?["3"]:["1",S.term?"6":"7"];}
+function isWeekday(){var w=theDate().getDay();return w>0&&w<6;}
+function getJSON(path){var o={};try{var ac=new AbortController();o.signal=ac.signal;setTimeout(function(){ac.abort();},12000);}catch(e){}
+  return fetch(API+path,o).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});}
 
 function loadLists(){
   if(S.lists)return Promise.resolve();
@@ -200,15 +205,57 @@ function liveLine(m,L){
     var pv=S.byBlock[m.d.sid+":"+m.d.block];
     if(S.day===0&&pv&&m.dep>n-2&&m.dep<n+60){var d=typeof pv.delay==="number"?Math.round(pv.delay/60):null;
       return "This bus is finishing its trip to "+esc(pv.destination||"the terminus")+(d===null?"":d>0?", running "+d+" min late":", on time");}
-    if(S.day===0&&m.dep<n)return "Should have left. This bus is not being tracked.";
+    if(S.day===0&&tripStatus(m,null).t==="No sign of this bus")return "Not being tracked. It may be cancelled. Check Google Maps.";
     return "";
   }
-  var stale=L.age>4?" (last seen "+clock(new Date(L.v.datetime))+")":"";
+  var stale=L.age>3?". Position is "+Math.round(L.age)+" min old, check Google Maps":"";
   if(L.next<0)return "Bus is being tracked"+stale;
   if(L.next<=m.i){var away=m.i-L.next+1,due=L.delay===null?null:Math.round(m.dep+L.delay-n);
     return (away<=1?"Next stop is "+f:away+" stops away from "+f)+(due===null?"":due<=0?", due now":", due in "+due+" min")+stale;}
   if(L.next<=m.j){var left=m.j-L.next+1;return "Left "+f+". "+(left<=1?"Next stop is "+t:left+" stops to "+t)+stale;}
   return "Passed "+t;
+}
+function tripStatus(m,L){
+  if(S.day!==0)return{c:"sched",t:"Timetable"};
+  if(L)return status(L.delay);
+  var n=nowMin();
+  if(n>m.d.stops[0].t+3&&m.dep-n<=6)return S.byBlock[m.d.sid+":"+m.d.block]?{c:"warn",t:"Running late"}:{c:"bad",t:"No sign of this bus"};
+  return{c:"sched",t:"Scheduled"};
+}
+function gmaps(){return "https://www.google.com/maps/dir/?api=1&travelmode=transit&origin="+encodeURIComponent(place(S.from).gm)+"&destination="+encodeURIComponent(place(S.to).gm);}
+function gmLink(){return '<br><a href="'+gmaps()+'" target="_blank" rel="noopener">Open Google Maps instead</a>';}
+function alertHTML(m){
+  var msg=S.crash||S.err||null;
+  if(!msg&&S.day===0&&S.updated&&Date.now()-S.updated.getTime()>50000)msg="Live data has stopped updating. Times on this screen may be old.";
+  if(!msg&&m&&S.day===0){var L=live(m);
+    if(L&&L.age>3)msg="This bus last reported its position "+Math.round(L.age)+" min ago, so the times here may be wrong.";
+    else if(!L&&tripStatus(m,null).t==="No sign of this bus")msg="This bus should be on its way but is not being tracked. It may be cancelled, or its tracker may be off.";}
+  return msg?'<div class="card alert">'+esc(msg)+gmLink()+'</div>':'';
+}
+function metres(a,b){var r=Math.PI/180,x=(b[0]-a[0])*r*Math.cos((a[1]+b[1])/2*r),y=(b[1]-a[1])*r;return Math.sqrt(x*x+y*y)*6371000;}
+function walk(m){if(!S.pos)return null;var d=metres(S.pos,m.d.stops[m.i].xy);return{d:d,min:Math.max(1,Math.ceil(d*1.3/80))};}
+function leaveHTML(m,L){
+  if(S.day!==0||!S.pos||(L&&L.next>m.i))return "";
+  var w=walk(m),n=nowMin(),exp=m.dep+(L&&L.delay!==null?L.delay:0),slack=exp-n-w.min-2,c,t;
+  if(w.d<60){c="good";t="You are at the stop";}
+  else if(w.d>20000){return "";}
+  else if(exp-n<w.min){c="bad";t="About "+w.min+" min walk away. You would probably miss this bus";}
+  else if(slack<=1){c="warn";t="Leave now · about "+w.min+" min walk";}
+  else{c="good";t="Leave in "+Math.floor(slack)+" min · about "+w.min+" min walk";}
+  if(!L)t+=" (timetable time, bus not tracked yet)";
+  return '<div class="leave '+c+'">'+t+'</div>';
+}
+var geoId=null,geoTick=0;
+function startGeo(){
+  if(!navigator.geolocation){S.geoErr="This browser cannot share your location.";render();return;}
+  if(geoId!==null)return;
+  geoId=navigator.geolocation.watchPosition(function(p){
+    S.pos=[p.coords.longitude,p.coords.latitude];S.geoErr=null;ls("bl_geo",true);
+    if(Date.now()-geoTick>5000){geoTick=Date.now();render();}
+  },function(){
+    S.pos=null;S.geoErr="Could not get your location. Allow location for this site in your phone settings, then tap again.";ls("bl_geo",false);
+    try{navigator.geolocation.clearWatch(geoId);}catch(e){}geoId=null;render();
+  },{enableHighAccuracy:true,maximumAge:15000,timeout:20000});
 }
 var BUS='<svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="17" fill="#ffc21a" stroke="#2f2680" stroke-width="2"/><rect x="10" y="9" width="16" height="15" rx="3" fill="#2f2680"/><rect x="12" y="11.5" width="12" height="6" rx="1" fill="#fff"/><circle cx="13.5" cy="21" r="1.4" fill="#ffc21a"/><circle cx="22.500" cy="21" r="1.4" fill="#ffc21a"/><rect x="11.500" y="24" width="3" height="3" fill="#2f2680"/><rect x="21.500" y="24" width="3" height="3" fill="#2f2680"/></svg>';
 
@@ -222,17 +269,22 @@ function homeHTML(){
      '<button class="swap" data-a="swap" aria-label="Swap direction">&#8645;</button>'+
      '<div><div class="lab">To</div><div class="place">'+esc(place(S.to).label)+'</div></div></div>';
   h+='<div class="row"><div class="seg"><button data-a="day0" class="'+(S.day===0?"on":"")+'">Today</button><button data-a="day1" class="'+(S.day===1?"on":"")+'">Tomorrow</button></div><span class="grow"></span>'+updBtn()+'</div>';
-  if(S.err)h+='<div class="card err">'+esc(S.err)+'</div>';
-  h+='<h2>Departures</h2>';
+  if(isWeekday())h+='<div class="row"><div class="seg"><button data-a="term1" class="'+(S.term?"on":"")+'">School day</button><button data-a="term0" class="'+(S.term?"":"on")+'">School holiday</button></div></div>';
   var list=visible();
+  if(S.day===0){
+    if(S.pos&&list.length){var w0=walk(list[0]);h+='<div class="note">You are about '+(w0.d<1000?Math.round(w0.d/10)*10+" m":(w0.d/1000).toFixed(1)+" km")+' from '+esc(place(S.from).short)+', roughly '+w0.min+' min on foot.</div>';}
+    else if(!S.pos)h+='<div class="row"><button class="btn" data-a="geo">Tell me when to leave</button>'+(S.geoErr?'<span class="note grow">'+esc(S.geoErr)+'</span>':'<span class="note grow">Uses your phone\'s location.</span>')+'</div>';
+  }
+  h+=alertHTML(null);
+  h+='<h2>Departures</h2>';
   if(S.pin&&S.day===0)list.sort(function(a,b){return (b.d.id===S.pin)-(a.d.id===S.pin)||a.dep-b.dep;});
   if(!list.length)h+='<div class="card note">'+(S.loading?"Loading buses…":"No more buses on this route "+(S.day?"tomorrow":"today")+".")+'</div>';
   list.forEach(function(m){
-    var L=live(m),st=S.day===0?status(L?L.delay:null):{c:"sched",t:"Timetable"},ll=liveLine(m,L);
+    var L=live(m),st=tripStatus(m,L),ll=liveLine(m,L);
     h+='<button class="dep" data-a="open" data-id="'+m.d.id+'"><div class="top"><span class="time">'+fmt(m.dep)+'</span><span class="st '+st.c+'">'+st.t+'</span>'+
       (m.d.id===S.pin?'<span class="sub">Pinned</span>':'')+'<span class="badge">'+m.d.line+'</span></div>'+
       '<div class="sub">Arrives '+esc(place(S.to).short)+' '+fmt(m.arr)+(L&&L.delay!==null&&(Math.round(L.delay)>0||Math.round(L.delay)<-1)?" (expected "+fmt(m.arr+L.delay)+")":"")+' · towards '+esc(m.d.head)+'</div>'+
-      (ll?'<div class="live">'+(L?'<span class="pulse"></span>':'')+'<span>'+ll+'</span></div>':'')+'</button>';
+      (ll?'<div class="live">'+(L?'<span class="pulse"></span>':'')+'<span>'+ll+'</span></div>':'')+leaveHTML(m,L)+'</button>';
   });
   if(S.used<S.cands.length&&!S.loading)h+='<button class="btn" data-a="more">Show later buses</button>';
   h+='<footer>Live positions and timetables from <a href="https://bustimes.org">bustimes.org</a>, using Bus Open Data Service data. Weekday school-day extras may not run in the holidays.</footer></main>';
@@ -241,16 +293,16 @@ function homeHTML(){
 function tripHTML(){
   var m=null;S.matches.forEach(function(x){if(x.d.id===S.sel)m=x;});
   if(!m){S.view="home";return homeHTML();}
-  var L=live(m),st=S.day===0?status(L?L.delay:null):{c:"sched",t:"Timetable"},stops=m.d.stops,pin=S.pin===m.d.id;
+  var L=live(m),st=tripStatus(m,L),stops=m.d.stops,pin=S.pin===m.d.id;
   var h=head("Journey details",true)+'<main>';
   h+='<div class="row">'+updBtn()+'<span class="grow"></span><button class="btn solid'+(pin?" on":"")+'" data-a="pin">'+(pin?"Pinned":"Pin this bus")+'</button></div>';
-  if(S.err)h+='<div class="card err">'+esc(S.err)+'</div>';
+  h+=alertHTML(m);
   var ll=liveLine(m,L);
   h+='<div class="card sum"><div class="big"><span class="time">'+fmt(m.dep)+'</span><span class="st '+st.c+'">'+st.t+'</span><span class="badge">'+m.d.line+'</span></div>'+
      '<div class="route">'+esc(place(S.from).label)+'<br><small>to</small> '+esc(place(S.to).label)+'</div>'+
      '<div>'+(m.arr-m.dep)+' min · '+(m.j-m.i)+' stops · Stagecoach '+m.d.line+' towards '+esc(m.d.head)+'</div>'+
      (ll?'<div class="live">'+(L?'<span class="pulse"></span>':'')+'<span>'+ll+'</span></div>':'')+
-     (L&&L.v.vehicle?'<div class="sub">Bus '+esc(L.v.vehicle.name||"")+'</div>':'')+'</div>';
+     leaveHTML(m,L)+(L&&L.v.vehicle?'<div class="sub">Bus '+esc(L.v.vehicle.name||"")+'</div>':'')+'</div>';
   h+='<div class="row"><h2 class="grow">Calling points</h2><button class="btn" data-a="map">'+(S.map?"Hide map":"Show map")+'</button></div><div id="map"></div>';
   var nx=L?L.next:-1,first=m.i;
   if(S.showAll)first=0;else if(nx>=0&&nx<m.i)first=Math.max(0,nx-1);
@@ -263,14 +315,14 @@ function tripHTML(){
     if(S.day!==0){sub="";}
     else if(done){var pd=pass[s.a];if(pd===null||pd===undefined){sub="Passed";}else{var ps=status(pd/60);sub="Left "+(ps.t==="On time"?"on time":ps.t);sc=ps.c;}}
     else if(L&&L.delay!==null){var r=Math.round(L.delay);if(r===0){sub="On time";sc="good";}else{sub="Exp "+fmt(s.t+L.delay);sc=r<0?"good":r>=5?"bad":"warn";}}
-    if(nx===k)h+='<div class="here"><span></span><span class="rail">'+BUS+'</span><span class="n">Bus is here'+(L.age>4?" (last seen "+clock(new Date(L.v.datetime))+")":"")+'</span></div>';
+    if(nx===k)h+='<div class="here"><span></span><span class="rail">'+BUS+'</span><span class="n">'+(L.age>3?"Bus was here "+Math.round(L.age)+" min ago":"Bus is here")+'</span></div>';
     h+='<div class="stop'+(done?" done":" todo")+(key?" key":"")+(k<m.i?" pre":"")+(k===first&&nx!==k?" first":"")+(k===m.j?" last":"")+'">'+
        '<div class="t"><b>'+fmt(s.t)+'</b><span class="'+sc+'">'+sub+'</span></div><div class="rail"><i></i></div>'+
        '<div class="n"><b>'+esc(s.n)+'</b>'+(k===m.i?'<span>Your stop</span>':k===m.j?'<span>Get off here</span>':'')+'</div></div>';
   }
   if(nx>m.j)h+='<div class="here"><span></span><span class="rail">'+BUS+'</span><span class="n">Bus has passed '+esc(place(S.to).short)+'</span></div>';
   h+='</div>';
-  if(S.day===0&&!L)h+='<div class="note">This bus is not sending its position yet. Live times appear once it starts its trip.</div>';
+  if(S.day===0&&!L&&st.t==="Scheduled")h+='<div class="note">This bus is not sending its position yet. Live times appear once it starts its trip.</div>';
   h+='<footer>Late and early times are measured by the bus\'s own tracker. Stops marked "Left" were recorded while this page was open.</footer></main>';
   return h;
 }
@@ -296,15 +348,20 @@ function drawMap(){
   mapObj.fitBounds(b,{padding:[24,24]});
 }
 function render(){
-  var y=window.scrollY;
-  document.getElementById("app").innerHTML=S.view==="trip"?tripHTML():homeHTML();
-  drawMap();window.scrollTo(0,y);
+  var y=window.scrollY,app=document.getElementById("app");
+  try{app.innerHTML=S.view==="trip"?tripHTML():homeHTML();drawMap();window.scrollTo(0,y);}
+  catch(e){app.innerHTML=head("Bus Live",false)+'<main><div class="card alert">The app has hit a glitch and cannot show buses right now.'+gmLink()+'</div><button class="btn" data-a="reset">Try again</button></main>';}
 }
+function glitch(){S.crash="The app hit a glitch, so this screen may be wrong.";render();}
+window.addEventListener("error",glitch);window.addEventListener("unhandledrejection",glitch);
 document.getElementById("app").addEventListener("click",function(e){
   var b=e.target.closest("[data-a]");if(!b)return;var a=b.getAttribute("data-a");
   if(a==="swap"){var t=S.from;S.from=S.to;S.to=t;save();reload();}
   else if(a==="day0"||a==="day1"){S.day=a==="day1"?1:0;reload();}
-  else if(a==="refresh"){reload();}
+  else if(a==="refresh"){S.crash=null;reload();}
+  else if(a==="reset"){S.crash=null;S.view="home";S.sel=null;reload();}
+  else if(a==="geo"){startGeo();}
+  else if(a==="term1"||a==="term0"){S.term=a==="term1";save();reload();}
   else if(a==="more"){S.loading=true;render();loadMore(2).then(function(){S.loading=false;render();});}
   else if(a==="open"){S.sel=+b.getAttribute("data-id");S.view="trip";S.showAll=false;S.map=false;render();window.scrollTo(0,0);}
   else if(a==="back"){S.view="home";render();}
@@ -313,6 +370,7 @@ document.getElementById("app").addEventListener("click",function(e){
   else if(a==="map"){S.map=!S.map;render();}
 });
 setInterval(function(){if(!document.hidden&&S.lists&&!S.loading)poll();},15000);
+if(ls("bl_geo")===true)startGeo();
 document.addEventListener("visibilitychange",function(){if(!document.hidden&&S.lists)poll();});
 window.__bl=S;
 reload();
