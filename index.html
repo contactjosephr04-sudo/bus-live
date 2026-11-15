@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Bus Live">
+<meta name="theme-color" content="#2f2680">
+<title>Budleigh Bus Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* Layout: one phone-width column. Purple bar, grey page, white cards, a navy line of calling points. */
+  --brand:#2f2680; --brand-ink:#ffffff; --pin:#ffc21a;
+  --page:#f3f4f8; --card:#ffffff; --rule:#d6d8e2;
+  --ink:#15172b; --muted:#5d6076; --line:#141a5e;
+  --good:#1f7a3a; --warn:#b05a00; --bad:#b3261e;
+  --font:"Noto Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--page);color:var(--ink);font-family:var(--font);font-size:16px;line-height:1.35;-webkit-text-size-adjust:100%}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,a:focus-visible{outline:3px solid var(--pin);outline-offset:2px}
+.bar{background:var(--brand);color:var(--brand-ink);display:flex;align-items:center;gap:8px;padding:14px 16px;position:sticky;top:0;z-index:5}
+.bar h1{font-size:20px;font-weight:700;margin:0;flex:1;text-align:center}
+.bar .back{background:none;border:0;color:#fff;font-size:26px;line-height:1;padding:0 8px 2px;width:40px}
+.bar .sp{width:40px}
+main{max-width:560px;margin:0 auto;padding:16px 16px 40px;display:flex;flex-direction:column;gap:16px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.btn{border:2px solid var(--brand);background:#fff;color:var(--brand);font-weight:700;border-radius:8px;padding:9px 14px}
+.btn.solid{background:var(--brand);color:var(--pin)}
+.btn.solid.on{background:var(--pin);color:var(--brand);border-color:var(--pin)}
+.grow{flex:1}
+.card{background:var(--card);border-radius:14px;padding:16px;border:1px solid var(--rule)}
+.dir{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center}
+.dir .lab{font-size:13px;color:var(--muted);font-weight:600}
+.dir .place{font-size:19px;font-weight:700}
+.swap{grid-row:1 / span 2;grid-column:2;width:52px;height:52px;border-radius:50%;border:2px solid var(--brand);background:#fff;color:var(--brand);font-size:22px;font-weight:700}
+.seg{display:flex;border:2px solid var(--brand);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:#fff;color:var(--brand);font-weight:700;padding:8px 16px}
+.seg button.on{background:var(--brand);color:#fff}
+h2{color:var(--brand);font-size:24px;margin:8px 0 0}
+.dep{display:block;width:100%;text-align:left;background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:14px 16px}
+.dep .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.time{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+.st{font-weight:700;font-size:17px}
+.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}.sched{color:var(--muted)}
+.badge{margin-left:auto;background:var(--brand);color:#fff;font-weight:700;border-radius:6px;padding:2px 9px;font-size:15px}
+.sub{color:var(--muted);font-size:15px;margin-top:4px}
+.live{margin-top:8px;font-weight:600;font-size:15px;display:flex;gap:8px;align-items:center}
+.pulse{width:10px;height:10px;border-radius:50%;background:var(--good);flex:none}
+.sum .big{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.sum .big .time{font-size:32px}
+.sum .route{font-size:26px;font-weight:700;line-height:1.2;margin:10px 0 8px}
+.sum .route small{font-size:17px;font-weight:700}
+.cp{background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:6px 0}
+.stop{display:grid;grid-template-columns:86px 34px 1fr;min-height:74px;padding:0 14px 0 16px}
+.stop .t{padding-top:10px}
+.stop .t b{font-size:20px;font-variant-numeric:tabular-nums}
+.stop .t span{display:block;font-size:14px;font-weight:700}
+.stop .rail{position:relative}
+.stop .rail:before{content:"";position:absolute;left:14px;top:0;bottom:0;width:6px;background:var(--line)}
+.stop.first .rail:before{top:22px}.stop.last .rail:before{bottom:calc(100% - 22px)}
+.stop .rail i{position:absolute;left:8px;top:13px;width:18px;height:18px;border-radius:50%;background:var(--line)}
+.stop.key .rail i{left:3px;top:8px;width:28px;height:28px}
+.stop.todo .rail i{background:#fff;border:4px solid var(--line)}
+.stop .n{padding:9px 0 10px 12px}
+.stop .n b{font-size:19px;font-weight:600}
+.stop.key .n b{font-weight:700}
+.stop .n span{display:block;font-size:14px;color:var(--muted);font-weight:600}
+.stop.done{color:var(--muted)}.stop.done .rail i,.stop.done .rail:before{background:#9a9db3}
+.stop.pre .n b{font-size:16px}
+.here{display:grid;grid-template-columns:86px 34px 1fr;padding:0 14px 0 16px}
+.here .rail{position:relative;min-height:44px}
+.here .rail:before{content:"";position:absolute;left:14px;top:0;bottom:0;width:6px;background:var(--line)}
+.here .rail svg{position:absolute;left:-1px;top:5px}
+.here .n{align-self:center;padding-left:12px;font-weight:700;color:var(--brand);font-size:15px}
+.link{background:none;border:0;color:var(--brand);font-weight:700;text-decoration:underline;padding:10px 16px}
+.note{color:var(--muted);font-size:14px}
+.err{border-color:var(--bad);color:var(--bad);font-weight:600}
+#map{height:300px;border-radius:14px;border:1px solid var(--rule);display:none}
+footer{color:var(--muted);font-size:13px;text-align:center}
+footer a{color:var(--brand)}
+@media (prefers-reduced-motion:no-preference){.pulse{animation:p 1.6s infinite}@keyframes p{50%{opacity:.35}}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+(function(){
+var API="https://bustimes.org/";
+var SERVICES=[{id:54596,line:"157"},{id:54597,line:"357"}];
+var BBOX="ymax=50.73&xmax=-3.18&ymin=50.58&xmin=-3.46";
+var PLACES=[
+  {id:"bud",label:"Budleigh Salterton Public Hall",short:"Budleigh Public Hall",match:"public hall"},
+  {id:"exm",label:"Exmouth Hospital Corner",short:"Hospital Corner",match:"hospital corner"}
+];
+var S={from:"bud",to:"exm",day:0,view:"home",sel:null,pin:null,lists:null,cands:[],used:0,matches:[],
+  byTrip:{},byBlock:{},passed:{},lastNext:{},updated:null,err:null,loading:false,showAll:false,map:false,liveOk:false};
+var details={};
+function ls(k,v){try{if(v===undefined)return JSON.parse(localStorage.getItem(k));localStorage.setItem(k,JSON.stringify(v));}catch(e){return null;}}
+var saved=ls("bl_state");if(saved){if(saved.from&&saved.to){S.from=saved.from;S.to=saved.to;}S.pin=saved.pin||null;}
+function save(){ls("bl_state",{from:S.from,to:S.to,pin:S.pin});}
+function place(id){for(var i=0;i<PLACES.length;i++)if(PLACES[i].id===id)return PLACES[i];}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+function hm(t){if(!t)return null;var p=t.split(":");return (+p[0])*60+(+p[1]);}
+function fmt(m){m=Math.round(m);var h=Math.floor(m/60)%24,mm=((m%60)+60)%60;return (h<10?"0":"")+h+":"+(mm<10?"0":"")+mm;}
+function nowMin(){var d=new Date();return d.getHours()*60+d.getMinutes()+d.getSeconds()/60;}
+function clock(d){return fmt(d.getHours()*60+d.getMinutes());}
+function theDate(){var d=new Date();d.setDate(d.getDate()+S.day);return d;}
+function groups(){var w=theDate().getDay();return w===0?["5"]:w===6?["3"]:["1","6"];}
+function getJSON(path){return fetch(API+path).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});}
+
+function loadLists(){
+  if(S.lists)return Promise.resolve();
+  return Promise.all(SERVICES.map(function(s){return getJSON("api/trips/?service="+s.id).then(function(a){
+    return a.results.map(function(x){return{id:x.id,start:hm(x.start),end:hm(x.end),head:x.headsign||"",tmc:x.ticket_machine_code||"",block:x.block||"",line:s.line,sid:s.id};});});}))
+  .then(function(r){S.lists=r[0].concat(r[1]);});
+}
+function buildCands(){
+  var g=groups(),from=S.day===0?nowMin()-20:0;
+  S.cands=S.lists.filter(function(t){return g.indexOf(t.tmc.charAt(0))>=0&&t.end>=from;}).sort(function(a,b){return a.start-b.start;});
+  S.used=0;S.matches=[];
+}
+function getDetail(t){
+  if(details[t.id])return Promise.resolve(details[t.id]);
+  var c=ls("bl_t_"+t.id);if(c){details[t.id]=c;return Promise.resolve(c);}
+  return getJSON("api/trips/"+t.id+"/").then(function(x){
+    var d={id:t.id,line:t.line,sid:t.sid,head:x.headsign||t.head,block:x.block||t.block,stops:(x.times||[]).map(function(s){
+      return{a:s.stop.atco_code,n:s.stop.name,xy:s.stop.location,t:hm(s.aimed_departure_time||s.aimed_arrival_time)};})};
+    details[t.id]=d;ls("bl_t_"+t.id,d);return d;});
+}
+function findLeg(d){
+  var f=place(S.from).match,t=place(S.to).match,best=null;
+  for(var i=0;i<d.stops.length;i++){if(d.stops[i].n.toLowerCase().indexOf(f)<0)continue;
+    for(var j=i+1;j<d.stops.length;j++){if(d.stops[j].n.toLowerCase().indexOf(t)>=0){if(!best||j-i<best.j-best.i)best={i:i,j:j};break;}}}
+  return best;
+}
+function loadMore(rounds){
+  if(S.used>=S.cands.length||rounds<=0)return Promise.resolve();
+  var batch=S.cands.slice(S.used,S.used+10);S.used+=batch.length;var want=S.matches.length+5;
+  return Promise.all(batch.map(function(t){return getDetail(t).then(function(d){var l=findLeg(d);if(l)S.matches.push({d:d,i:l.i,j:l.j,dep:d.stops[l.i].t,arr:d.stops[l.j].t});},function(){});}))
+  .then(function(){S.matches.sort(function(a,b){return a.dep-b.dep;});
+    if(visible().length<Math.min(want,5))return loadMore(rounds-1);});
+}
+function reload(){
+  S.loading=true;S.err=null;render();
+  return loadLists().then(function(){buildCands();return loadMore(4);}).then(function(){S.loading=false;return poll();})
+  .catch(function(e){S.loading=false;S.err="Could not load the timetable. Check your signal, then tap Refresh.";render();});
+}
+function poll(){
+  if(S.day!==0){S.byTrip={};S.byBlock={};S.updated=new Date();render();return Promise.resolve();}
+  return getJSON("vehicles.json?"+BBOX).then(function(v){
+    var bt={},bb={};
+    v.forEach(function(x){
+      if(x.block&&x.service_id)bb[x.service_id+":"+x.block]=x;
+      if(!x.trip_id)return;bt[x.trip_id]=x;
+      var nx=x.progress&&x.progress.next_stop;
+      if(nx&&S.lastNext[x.trip_id]&&S.lastNext[x.trip_id]!==nx){
+        (S.passed[x.trip_id]=S.passed[x.trip_id]||{})[x.progress.prev_stop]=typeof x.delay==="number"?x.delay:null;}
+      if(nx)S.lastNext[x.trip_id]=nx;
+    });
+    S.byTrip=bt;S.byBlock=bb;S.updated=new Date();S.liveOk=true;S.err=null;render();
+  }).catch(function(){S.liveOk=false;S.err="Live bus positions are not loading. Showing timetable times only.";render();});
+}
+function live(m){
+  var v=S.byTrip[m.d.id];if(!v)return null;
+  var o={v:v,delay:typeof v.delay==="number"?v.delay/60:null,next:-1,age:(Date.now()-new Date(v.datetime).getTime())/60000};
+  var p=v.progress,st=m.d.stops;
+  if(p){for(var k=st.length-1;k>0;k--)if(st[k].a===p.next_stop&&st[k-1].a===p.prev_stop){o.next=k;break;}
+    if(o.next<0)for(k=0;k<st.length;k++)if(st[k].a===p.next_stop){o.next=k;break;}
+    if(o.next>0&&p.progress>=1&&o.next===st.length-1)o.next=st.length;}
+  return o;
+}
+function status(delay){
+  if(delay===null||delay===undefined)return{c:"sched",t:"Scheduled"};
+  var r=Math.round(delay);
+  if(r<=0&&r>=-1||r===0)return{c:"good",t:"On time"};
+  if(r<0)return{c:"good",t:(-r)+" min early"};
+  return{c:r>=5?"bad":"warn",t:r+" min late"};
+}
+function visible(){
+  var n=nowMin(),seen={};
+  var list=S.matches.filter(function(m){
+    if(S.day!==0)return true;
+    var L=live(m);
+    if(L)return L.next<=m.j;
+    return m.dep>=n-12;
+  });
+  /* school-day and holiday versions of the same bus share a time: keep one, the tracked one if any */
+  list.sort(function(a,b){return a.dep-b.dep||(S.byTrip[b.d.id]?1:0)-(S.byTrip[a.d.id]?1:0);});
+  return list.filter(function(m){var k=m.d.line+"|"+m.dep+"|"+m.arr;if(seen[k])return false;seen[k]=1;return true;});
+}
+function liveLine(m,L){
+  var n=nowMin(),f=place(S.from).short,t=place(S.to).short;
+  if(!L){
+    var pv=S.byBlock[m.d.sid+":"+m.d.block];
+    if(S.day===0&&pv&&m.dep>n-2&&m.dep<n+60){var d=typeof pv.delay==="number"?Math.round(pv.delay/60):null;
+      return "This bus is finishing its trip to "+esc(pv.destination||"the terminus")+(d===null?"":d>0?", running "+d+" min late":", on time");}
+    if(S.day===0&&m.dep<n)return "Should have left. This bus is not being tracked.";
+    return "";
+  }
+  var stale=L.age>4?" (last seen "+clock(new Date(L.v.datetime))+")":"";
+  if(L.next<0)return "Bus is being tracked"+stale;
+  if(L.next<=m.i){var away=m.i-L.next+1,due=L.delay===null?null:Math.round(m.dep+L.delay-n);
+    return (away<=1?"Next stop is "+f:away+" stops away from "+f)+(due===null?"":due<=0?", due now":", due in "+due+" min")+stale;}
+  if(L.next<=m.j){var left=m.j-L.next+1;return "Left "+f+". "+(left<=1?"Next stop is "+t:left+" stops to "+t)+stale;}
+  return "Passed "+t;
+}
+var BUS='<svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="17" fill="#ffc21a" stroke="#2f2680" stroke-width="2"/><rect x="10" y="9" width="16" height="15" rx="3" fill="#2f2680"/><rect x="12" y="11.5" width="12" height="6" rx="1" fill="#fff"/><circle cx="13.5" cy="21" r="1.4" fill="#ffc21a"/><circle cx="22.500" cy="21" r="1.4" fill="#ffc21a"/><rect x="11.500" y="24" width="3" height="3" fill="#2f2680"/><rect x="21.500" y="24" width="3" height="3" fill="#2f2680"/></svg>';
+
+function head(title,back){
+  return '<div class="bar">'+(back?'<button class="back" data-a="back" aria-label="Back">&#8249;</button>':'<span class="sp"></span>')+'<h1>'+title+'</h1><span class="sp"></span></div>';
+}
+function updBtn(){return '<button class="btn" data-a="refresh">&#8635; '+(S.loading?"Loading…":S.updated?"Updated "+clock(S.updated):"Refresh")+'</button>';}
+function homeHTML(){
+  var h=head("Bus Live",false)+'<main>';
+  h+='<div class="card dir"><div><div class="lab">From</div><div class="place">'+esc(place(S.from).label)+'</div></div>'+
+     '<button class="swap" data-a="swap" aria-label="Swap direction">&#8645;</button>'+
+     '<div><div class="lab">To</div><div class="place">'+esc(place(S.to).label)+'</div></div></div>';
+  h+='<div class="row"><div class="seg"><button data-a="day0" class="'+(S.day===0?"on":"")+'">Today</button><button data-a="day1" class="'+(S.day===1?"on":"")+'">Tomorrow</button></div><span class="grow"></span>'+updBtn()+'</div>';
+  if(S.err)h+='<div class="card err">'+esc(S.err)+'</div>';
+  h+='<h2>Departures</h2>';
+  var list=visible();
+  if(S.pin&&S.day===0)list.sort(function(a,b){return (b.d.id===S.pin)-(a.d.id===S.pin)||a.dep-b.dep;});
+  if(!list.length)h+='<div class="card note">'+(S.loading?"Loading buses…":"No more buses on this route "+(S.day?"tomorrow":"today")+".")+'</div>';
+  list.forEach(function(m){
+    var L=live(m),st=S.day===0?status(L?L.delay:null):{c:"sched",t:"Timetable"},ll=liveLine(m,L);
+    h+='<button class="dep" data-a="open" data-id="'+m.d.id+'"><div class="top"><span class="time">'+fmt(m.dep)+'</span><span class="st '+st.c+'">'+st.t+'</span>'+
+      (m.d.id===S.pin?'<span class="sub">Pinned</span>':'')+'<span class="badge">'+m.d.line+'</span></div>'+
+      '<div class="sub">Arrives '+esc(place(S.to).short)+' '+fmt(m.arr)+(L&&L.delay!==null&&(Math.round(L.delay)>0||Math.round(L.delay)<-1)?" (expected "+fmt(m.arr+L.delay)+")":"")+' · towards '+esc(m.d.head)+'</div>'+
+      (ll?'<div class="live">'+(L?'<span class="pulse"></span>':'')+'<span>'+ll+'</span></div>':'')+'</button>';
+  });
+  if(S.used<S.cands.length&&!S.loading)h+='<button class="btn" data-a="more">Show later buses</button>';
+  h+='<footer>Live positions and timetables from <a href="https://bustimes.org">bustimes.org</a>, using Bus Open Data Service data. Weekday school-day extras may not run in the holidays.</footer></main>';
+  return h;
+}
+function tripHTML(){
+  var m=null;S.matches.forEach(function(x){if(x.d.id===S.sel)m=x;});
+  if(!m){S.view="home";return homeHTML();}
+  var L=live(m),st=S.day===0?status(L?L.delay:null):{c:"sched",t:"Timetable"},stops=m.d.stops,pin=S.pin===m.d.id;
+  var h=head("Journey details",true)+'<main>';
+  h+='<div class="row">'+updBtn()+'<span class="grow"></span><button class="btn solid'+(pin?" on":"")+'" data-a="pin">'+(pin?"Pinned":"Pin this bus")+'</button></div>';
+  if(S.err)h+='<div class="card err">'+esc(S.err)+'</div>';
+  var ll=liveLine(m,L);
+  h+='<div class="card sum"><div class="big"><span class="time">'+fmt(m.dep)+'</span><span class="st '+st.c+'">'+st.t+'</span><span class="badge">'+m.d.line+'</span></div>'+
+     '<div class="route">'+esc(place(S.from).label)+'<br><small>to</small> '+esc(place(S.to).label)+'</div>'+
+     '<div>'+(m.arr-m.dep)+' min · '+(m.j-m.i)+' stops · Stagecoach '+m.d.line+' towards '+esc(m.d.head)+'</div>'+
+     (ll?'<div class="live">'+(L?'<span class="pulse"></span>':'')+'<span>'+ll+'</span></div>':'')+
+     (L&&L.v.vehicle?'<div class="sub">Bus '+esc(L.v.vehicle.name||"")+'</div>':'')+'</div>';
+  h+='<div class="row"><h2 class="grow">Calling points</h2><button class="btn" data-a="map">'+(S.map?"Hide map":"Show map")+'</button></div><div id="map"></div>';
+  var nx=L?L.next:-1,first=m.i;
+  if(S.showAll)first=0;else if(nx>=0&&nx<m.i)first=Math.max(0,nx-1);
+  h+='<div class="cp">';
+  if(first>0)h+='<button class="link" data-a="all">Show '+first+' earlier stops</button>';
+  else if(S.showAll&&m.i>0)h+='<button class="link" data-a="all">Hide earlier stops</button>';
+  var pass=S.passed[m.d.id]||{};
+  for(var k=first;k<=m.j;k++){
+    var s=stops[k],done=nx>=0&&k<nx,key=k===m.i||k===m.j,sub="",sc="sched";
+    if(S.day!==0){sub="";}
+    else if(done){var pd=pass[s.a];if(pd===null||pd===undefined){sub="Passed";}else{var ps=status(pd/60);sub="Left "+(ps.t==="On time"?"on time":ps.t);sc=ps.c;}}
+    else if(L&&L.delay!==null){var r=Math.round(L.delay);if(r===0){sub="On time";sc="good";}else{sub="Exp "+fmt(s.t+L.delay);sc=r<0?"good":r>=5?"bad":"warn";}}
+    if(nx===k)h+='<div class="here"><span></span><span class="rail">'+BUS+'</span><span class="n">Bus is here'+(L.age>4?" (last seen "+clock(new Date(L.v.datetime))+")":"")+'</span></div>';
+    h+='<div class="stop'+(done?" done":" todo")+(key?" key":"")+(k<m.i?" pre":"")+(k===first&&nx!==k?" first":"")+(k===m.j?" last":"")+'">'+
+       '<div class="t"><b>'+fmt(s.t)+'</b><span class="'+sc+'">'+sub+'</span></div><div class="rail"><i></i></div>'+
+       '<div class="n"><b>'+esc(s.n)+'</b>'+(k===m.i?'<span>Your stop</span>':k===m.j?'<span>Get off here</span>':'')+'</div></div>';
+  }
+  if(nx>m.j)h+='<div class="here"><span></span><span class="rail">'+BUS+'</span><span class="n">Bus has passed '+esc(place(S.to).short)+'</span></div>';
+  h+='</div>';
+  if(S.day===0&&!L)h+='<div class="note">This bus is not sending its position yet. Live times appear once it starts its trip.</div>';
+  h+='<footer>Late and early times are measured by the bus\'s own tracker. Stops marked "Left" were recorded while this page was open.</footer></main>';
+  return h;
+}
+var mapObj=null,mapLayer=null;
+function drawMap(){
+  var el=document.getElementById("map");if(!el)return;
+  if(!S.map||S.view!=="trip"){if(mapObj){mapObj.remove();mapObj=null;}return;}
+  el.style.display="block";
+  if(!window.L){
+    if(!document.getElementById("lf")){
+      var c=document.createElement("link");c.rel="stylesheet";c.href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";document.head.appendChild(c);
+      var s=document.createElement("script");s.id="lf";s.src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";s.onload=drawMap;document.head.appendChild(s);}
+    return;}
+  var m=null;S.matches.forEach(function(x){if(x.d.id===S.sel)m=x;});if(!m)return;
+  if(mapObj){mapObj.remove();mapObj=null;}
+  mapObj=window.L.map(el,{attributionControl:true});
+  window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:18,attribution:"&copy; OpenStreetMap"}).addTo(mapObj);
+  var pts=m.d.stops.slice(m.i,m.j+1).map(function(s){return[s.xy[1],s.xy[0]];});
+  window.L.polyline(pts,{color:"#141a5e",weight:5}).addTo(mapObj);
+  [m.i,m.j].forEach(function(k){var s=m.d.stops[k];window.L.circleMarker([s.xy[1],s.xy[0]],{radius:8,color:"#141a5e",fillColor:"#fff",fillOpacity:1,weight:4}).addTo(mapObj).bindTooltip(s.n);});
+  var b=window.L.latLngBounds(pts),L2=live(m);
+  if(L2){var p=[L2.v.coordinates[1],L2.v.coordinates[0]];window.L.circleMarker(p,{radius:10,color:"#2f2680",fillColor:"#ffc21a",fillOpacity:1,weight:3}).addTo(mapObj).bindTooltip("Bus",{permanent:true,direction:"top"});b.extend(p);}
+  mapObj.fitBounds(b,{padding:[24,24]});
+}
+function render(){
+  var y=window.scrollY;
+  document.getElementById("app").innerHTML=S.view==="trip"?tripHTML():homeHTML();
+  drawMap();window.scrollTo(0,y);
+}
+document.getElementById("app").addEventListener("click",function(e){
+  var b=e.target.closest("[data-a]");if(!b)return;var a=b.getAttribute("data-a");
+  if(a==="swap"){var t=S.from;S.from=S.to;S.to=t;save();reload();}
+  else if(a==="day0"||a==="day1"){S.day=a==="day1"?1:0;reload();}
+  else if(a==="refresh"){reload();}
+  else if(a==="more"){S.loading=true;render();loadMore(2).then(function(){S.loading=false;render();});}
+  else if(a==="open"){S.sel=+b.getAttribute("data-id");S.view="trip";S.showAll=false;S.map=false;render();window.scrollTo(0,0);}
+  else if(a==="back"){S.view="home";render();}
+  else if(a==="pin"){S.pin=S.pin===S.sel?null:S.sel;save();render();}
+  else if(a==="all"){S.showAll=!S.showAll;render();}
+  else if(a==="map"){S.map=!S.map;render();}
+});
+setInterval(function(){if(!document.hidden&&S.lists&&!S.loading)poll();},15000);
+document.addEventListener("visibilitychange",function(){if(!document.hidden&&S.lists)poll();});
+window.__bl=S;
+reload();
+})();
+</script>
+</body>
+</html>
