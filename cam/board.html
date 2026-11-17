@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board Camera – test</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #f4f1fb; font-family: "Segoe UI", -apple-system, sans-serif; color: #1d1b2c; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 20px; }
+  h1 { margin: 0; font-size: 30px; }
+  #win { position: relative; width: min(92vw, calc((100vh - 200px) * 16 / 9)); aspect-ratio: 16 / 9;
+    background: #000; border: 8px solid #fff; border-radius: 6px; box-shadow: 0 18px 50px rgba(40, 20, 90, .35); overflow: hidden; }
+  #win video, #win canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #win.fill video, #win.fill canvas { object-fit: cover; }
+  #win.rot video, #win.rot canvas { transform: rotate(180deg); }
+  #frozen { display: none; }
+  #win.frozen #frozen { display: block; }
+  #badge { position: absolute; top: 12px; left: 12px; z-index: 3; background: #d92d20; color: #fff; font-weight: 800;
+    padding: 6px 12px; border-radius: 999px; font-size: 15px; display: none; }
+  #win.live #badge { display: block; }
+  #win.frozen #badge { background: #6941c6; }
+  #join { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 36px;
+    background: #1d1b2c; color: #fff; padding: 24px; }
+  #win.live #join { display: none; }
+  #qr { background: #fff; padding: 12px; border-radius: 12px; }
+  #qr img, #qr canvas { display: block; width: 190px; height: 190px; }
+  .big { font-size: 64px; font-weight: 800; letter-spacing: 12px; }
+  .steps { font-size: 18px; line-height: 1.55; max-width: 420px; }
+  .steps b { color: #c4b5fd; }
+  #msg { color: #fda29b; font-weight: 700; margin-top: 8px; }
+  #wait { position: absolute; inset: 0; z-index: 2; display: none; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; color: #fff; font-size: 22px; font-weight: 700; text-align: center; padding: 30px; }
+  #win.linking #wait { display: flex; }
+  #win.linking #join { display: none; }
+  #diag { position: absolute; right: 10px; bottom: 8px; z-index: 3; font: 12px/1.3 ui-monospace, monospace;
+    color: rgba(255,255,255,.75); background: rgba(0,0,0,.45); padding: 3px 7px; border-radius: 6px; display: none; }
+  #win.linking #diag, #win.live #diag { display: block; }
+  #bar { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button { font: inherit; font-weight: 700; font-size: 17px; border: 0; border-radius: 12px; padding: 12px 18px;
+    background: #fff; color: #1d1b2c; box-shadow: 0 2px 6px rgba(0,0,0,.12); cursor: pointer; }
+  button.on { background: #6941c6; color: #fff; }
+</style>
+</head>
+<body>
+<h1>📱 Board Camera: test page</h1>
+<div id="win">
+  <video id="v" playsinline autoplay muted></video>
+  <canvas id="frozen"></canvas>
+  <div id="badge">● LIVE</div>
+  <div id="wait"><div id="waitMsg">📱 Camera found, connecting video…</div><div id="waitSub" style="font-size:16px;font-weight:500;color:#c4b5fd"></div></div>
+  <div id="diag"></div>
+  <div id="join">
+    <div id="qr"></div>
+    <div>
+      <div class="steps">On the iPad or phone, scan this QR code with the <b>Camera app</b>, or open<br><b id="url"></b><br>and type the code:</div>
+      <div class="big" id="code">····</div>
+      <div class="steps" id="state">Getting ready…</div>
+      <div id="msg"></div>
+    </div>
+  </div>
+</div>
+<div id="always" style="font:14px/1.4 ui-monospace,monospace;color:#555;text-align:center"></div>
+<div id="bar">
+  <button id="freeze">⏸ Freeze</button>
+  <button id="rot">🔄 Rotate</button>
+  <button id="fill">⤢ Fill</button>
+  <button id="newcode">🔢 New code</button>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(() => {
+  const CAM_URL = 'https://contactjosephr04-sudo.github.io/bus-live/cam/';
+  const PREFIX = 'willowcam-';
+  const $ = id => document.getElementById(id);
+  const win = $('win'), v = $('v'), frozen = $('frozen');
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, val) { try { localStorage.setItem(k, val); } catch (e) {} }
+  };
+  let code = store.get('boardcam.code') || newCode();
+  let peer = null, current = null;
+
+  // Relay server (TURN) so the phone and board can link across different networks.
+  const TURN_URL = '';
+  async function peerOptions() {
+    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    if (TURN_URL) {
+      try {
+        const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 4000);
+        const list = await (await fetch(TURN_URL, { signal: ctl.signal })).json();
+        clearTimeout(t);
+        if (Array.isArray(list)) servers.push(...list);
+      } catch (e) {}
+    }
+    return { config: { iceServers: servers } };
+  }
+
+  function newCode() { return String(Math.floor(1000 + Math.random() * 9000)); }
+
+  function showJoin() {
+    $('code').textContent = code;
+    $('url').textContent = CAM_URL.replace('https://', '');
+    $('qr').innerHTML = '';
+    if (window.QRCode) new QRCode($('qr'), { text: CAM_URL + '?c=' + code, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M });
+  }
+
+  setInterval(() => {
+    const st = !window.Peer ? 'connection script did not load (internet/filter?)'
+      : !peer ? 'starting' : peer.destroyed ? 'stopped' : peer.disconnected ? 'lost the connecting service, retrying' : peer.open ? 'ready, waiting for camera' : 'reaching the connecting service…';
+    $('always').textContent = 'Board code ' + code + ' · ' + st + (current ? ' · camera found' : '');
+  }, 1000);
+  async function start() {
+    if (!window.Peer) { $('state').textContent = ''; $('msg').textContent = 'No internet connection, so the camera link can’t start.'; return; }
+    if (peer) peer.destroy();
+    showJoin();
+    $('msg').textContent = '';
+    $('state').textContent = 'Getting ready…';
+    const opts = await peerOptions();
+    peer = new Peer(PREFIX + code, opts);
+    peer.on('open', () => { store.set('boardcam.code', code); $('state').textContent = 'Waiting for the camera…'; });
+    peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
+    peer.on('error', err => {
+      if (err.type === 'unavailable-id') { code = newCode(); start(); return; }
+      if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') {
+        $('msg').textContent = 'Can’t reach the camera service, trying again…';
+        setTimeout(start, 4000);
+      }
+    });
+    peer.on('call', call => {
+      if (current) try { current.close(); } catch (e) {}
+      current = call;
+      win.classList.remove('live'); win.classList.add('linking');
+      $('waitMsg').textContent = '📱 Camera found, connecting video…'; $('waitSub').textContent = '';
+      call.answer(undefined, { sdpTransform: preferVP8 });
+      call.on('stream', s => { v.srcObject = s; v.play().catch(() => {}); });
+      const lost = () => {
+        if (current !== call) return;
+        clearInterval(statTimer); clearTimeout(failTimer);
+        win.classList.remove('live', 'linking'); current = null;
+        $('state').textContent = 'Camera disconnected, waiting…';
+      };
+      call.on('close', lost);
+      call.on('error', lost);
+      const pc = call.peerConnection;
+      const fail = why => {
+        if (current !== call) return;
+        $('waitMsg').textContent = '⚠️ The video couldn’t get through';
+        $('waitSub').textContent = why;
+      };
+      const failTimer = setTimeout(() => { if (!win.classList.contains('live')) fail('Put the phone/iPad on the same Wi-Fi as this computer (not mobile data), then tap Stop and Start camera on it.'); }, 15000);
+      if (pc) pc.addEventListener('iceconnectionstatechange', () => {
+        if (pc.iceConnectionState === 'failed') fail('The network blocked the link. Put the phone/iPad on the same Wi-Fi as this computer (not mobile data).');
+      });
+      const statTimer = setInterval(async () => {
+        if (current !== call || !pc) { clearInterval(statTimer); return; }
+        let link = pc.iceConnectionState, codec = '?', frames = 0, size = '', route = '';
+        try {
+          const st = await pc.getStats(), byId = {};
+          st.forEach(r => byId[r.id] = r);
+          st.forEach(r => {
+            if (r.type === 'inbound-rtp' && r.kind === 'video') {
+              frames = r.framesDecoded || 0;
+              if (r.frameWidth) size = r.frameWidth + '×' + r.frameHeight;
+              if (r.codecId && byId[r.codecId]) codec = byId[r.codecId].mimeType.replace('video/', '');
+            }
+            if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') {
+              const l = byId[r.localCandidateId], rm = byId[r.remoteCandidateId];
+              if (l && rm) route = l.candidateType + '→' + rm.candidateType;
+            }
+          });
+        } catch (e) {}
+        $('diag').textContent = [link, route, codec, frames + ' frames', size].filter(Boolean).join(' · ');
+        if (frames > 0 && v.videoWidth > 0) {
+          win.classList.remove('linking'); win.classList.add('live'); clearTimeout(failTimer);
+        } else if (frames === 0 && (link === 'connected' || link === 'completed') && !win.classList.contains('live')) {
+          $('waitSub').textContent = 'Linked, waiting for the first picture (' + codec + ')…';
+        }
+      }, 1000);
+    });
+  }
+
+  // Ask the phone to send VP8 (decodes on every computer) rather than H.264.
+  function preferVP8(sdp) {
+    return sdp.split('\r\n').reduce((out, line, i, lines) => {
+      if (line.startsWith('m=video')) {
+        const parts = line.split(' '), head = parts.slice(0, 3), pts = parts.slice(3);
+        const vp8 = lines.filter(l => /^a=rtpmap:\d+ VP8\//i.test(l)).map(l => l.split(':')[1].split(' ')[0]);
+        line = head.concat(vp8.filter(p => pts.includes(p)), pts.filter(p => !vp8.includes(p))).join(' ');
+      }
+      out.push(line); return out;
+    }, []).join('\r\n');
+  }
+
+  $('freeze').onclick = () => {
+    if (win.classList.toggle('frozen')) {
+      frozen.width = v.videoWidth || 1920; frozen.height = v.videoHeight || 1080;
+      frozen.getContext('2d').drawImage(v, 0, 0, frozen.width, frozen.height);
+      $('freeze').textContent = '▶ Unfreeze'; $('freeze').classList.add('on');
+    } else { $('freeze').textContent = '⏸ Freeze'; $('freeze').classList.remove('on'); }
+  };
+  $('rot').onclick = () => $('rot').classList.toggle('on', win.classList.toggle('rot'));
+  $('fill').onclick = () => $('fill').classList.toggle('on', win.classList.toggle('fill'));
+  $('newcode').onclick = () => { code = newCode(); win.classList.remove('live', 'linking'); start(); };
+
+  start();
+})();
+</script>
+</body>
+</html>
