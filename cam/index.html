@@ -150,7 +150,7 @@
       if (p !== pc) return;
       const s = p.iceConnectionState;
       if (s === 'connected' || s === 'completed') { clearTimeout(failTimer); capBitrate(p); }
-      if (s === 'failed') { setStatus('Lost the board, reconnecting…', 'wait'); setTimeout(offer, 1000); }
+      if (s === 'failed') { setStatus('Video couldn’t get through: see the board for why', 'wait'); setTimeout(() => { if (p === pc) offer(); }, 20000); }
       if (s === 'disconnected') { clearTimeout(failTimer); failTimer = setTimeout(() => { if (p === pc) offer(); }, 4000); }
     });
 

@@ -93,6 +93,7 @@
   let code = store.get('boardcam.code6') || newCode();
   store.set('boardcam.code6', code);
   const BID = rand();
+  let localOK = null;
   let bus = null, pc = null, session = null, statTimer = null, failTimer = null;
 
   function makeBus(onMsg, onUp) {
@@ -157,7 +158,23 @@
     $('waitMsg').textContent = '📱 Camera found, connecting video…'; $('waitSub').textContent = '';
     const p = pc = new RTCPeerConnection({ iceServers: ICE });
     p.ontrack = e => { v.srcObject = e.streams[0] || new MediaStream([e.track]); v.play().catch(() => {}); };
-    const fail = why => { if (p !== pc) return; $('waitMsg').textContent = '⚠️ The video couldn’t get through'; $('waitSub').textContent = why; };
+    const fail = async why => {
+      if (p !== pc) return;
+      $('waitMsg').textContent = '⚠️ The video couldn’t get through';
+      let mine = new Set(), theirs = new Set(), tried = 0;
+      try {
+        (await p.getStats()).forEach(r => {
+          const kind = c => c.candidateType + ((c.address || '').endsWith('.local') || !c.address ? '(hidden)' : '');
+          if (r.type === 'local-candidate') mine.add(kind(r));
+          if (r.type === 'remote-candidate') theirs.add(kind(r));
+          if (r.type === 'candidate-pair') tried++;
+        });
+      } catch (e) {}
+      let tip = why;
+      if (localOK === false) tip = 'Click the camera icon in the address bar → Allow, reload this page, then Stop/Start camera on the phone. (Chrome needs camera permission to link on the same Wi-Fi.)';
+      else if (mine.size && theirs.size) tip = 'Your Wi-Fi is keeping the two devices apart (common on guest networks and some TP-Link extenders). A relay will fix this: tell Claude.';
+      $('waitSub').textContent = tip + '  [board: ' + [...mine].join(', ') + ' | camera: ' + [...theirs].join(', ') + ' | ' + tried + ' routes tried]';
+    };
     p.addEventListener('iceconnectionstatechange', () => {
       if (p !== pc) return;
       const s = p.iceConnectionState;
@@ -206,8 +223,23 @@
     }, 1000);
   }
 
+  // Chrome hides this computer's local address from pages without camera permission,
+  // which stops a phone on the same Wi-Fi linking directly. Asking once fixes that.
+  async function unlockLocalLink() {
+    try {
+      if (navigator.permissions) {
+        const st = await navigator.permissions.query({ name: 'camera' });
+        if (st.state === 'granted') return true;
+      }
+      const s = await navigator.mediaDevices.getUserMedia({ video: true });
+      s.getTracks().forEach(t => t.stop());
+      return true;
+    } catch (e) { return false; }
+  }
+
   function start() {
     showJoin();
+    unlockLocalLink().then(ok => { localOK = ok; });
     if (!window.mqtt) { $('state').textContent = ''; $('msg').textContent = 'The page couldn’t load its connection part: check the internet and reload.'; return; }
     $('state').textContent = 'Getting ready…';
     bus = makeBus((t, m) => { if (m.type === 'offer' && t === TOPIC + code + '/board') onOffer(m); }, () => announce());
