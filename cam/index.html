@@ -13,7 +13,7 @@
   body { display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   #stage { flex: 1; position: relative; overflow: hidden; background: #000; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
-  #status { position: absolute; top: 12px; left: 12px; padding: 8px 14px; border-radius: 999px;
+  #status { position: absolute; top: 12px; left: 12px; right: 12px; width: fit-content; padding: 8px 14px; border-radius: 999px;
     font-weight: 700; font-size: 16px; background: #444; }
   #status.live { background: #d92d20; }
   #status.wait { background: #b54708; }
@@ -27,7 +27,7 @@
     justify-content: center; gap: 18px; padding: 24px; text-align: center; background: #111; }
   #setup h1 { margin: 0; font-size: 28px; }
   #setup p { margin: 0; color: #bbb; font-size: 17px; max-width: 420px; line-height: 1.4; }
-  #code { font-size: 40px; letter-spacing: 10px; width: 220px; text-align: center; padding: 10px;
+  #code { font-size: 36px; letter-spacing: 8px; width: 250px; text-align: center; padding: 10px;
     border-radius: 14px; border: 2px solid #555; background: #000; color: #fff; }
   #err { color: #fda29b; font-weight: 600; min-height: 1.2em; }
   .hide { display: none !important; }
@@ -40,8 +40,8 @@
   <div id="diag" class="hide"></div>
   <div id="setup">
     <h1>📷 Board Camera</h1>
-    <p>Sends this camera to the board. Type the 4-digit code shown on the board, or scan the board's QR code.</p>
-    <input id="code" inputmode="numeric" maxlength="4" placeholder="0000" autocomplete="off">
+    <p>Sends this camera to the board. Scan the QR code on the board, or type the 6-digit code it shows.</p>
+    <input id="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off">
     <button class="primary" id="go">Start camera</button>
     <div id="err"></div>
   </div>
@@ -51,47 +51,70 @@
   <button id="stop">✕ Stop</button>
 </div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.16.1/dist/mqtt.min.js"></script>
 <script>
 (() => {
-  const PREFIX = 'willowcam-';
-  const params = new URLSearchParams(location.search);
+  // ---- Shared settings (must match the board) ----
+  const TOPIC = 'boardcam-willow-7f3a/';
+  const BROKERS = window.BOARDCAM_BROKERS || [
+    'wss://broker.hivemq.com:8884/mqtt',
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://test.mosquitto.org:8081/mqtt'
+  ];
+  const ICE = (window.BOARDCAM_ICE || []).concat([{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }]);
+
   const $ = id => document.getElementById(id);
   const v = $('v'), statusEl = $('status');
-  let code = (params.get('c') || '').replace(/\D/g, '').slice(0, 4);
-  try { if (!code) code = localStorage.getItem('boardcam.code') || ''; } catch (e) {}
+  const params = new URLSearchParams(location.search);
+  let code = (params.get('c') || '').replace(/\D/g, '').slice(0, 6);
   $('code').value = code;
 
-  let stream = null, peer = null, call = null, facing = 'environment';
-  let wakeLock = null, retryTimer = null, running = false, opts = null;
+  let stream = null, pc = null, session = null, answered = false, running = false, boardId = null;
+  let facing = 'environment', wakeLock = null, offerTimer = null, failTimer = null, statTimer = null, bus = null;
 
-  // Relay server (TURN) so the phone and board can link across different networks.
-  const TURN_URL = '';
-  async function peerOptions() {
-    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
-    if (TURN_URL) {
+  const rand = () => Math.random().toString(36).slice(2, 10);
+  function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ''; }
+
+  // ---- Message bus: talks through every service that answers, ignores duplicates ----
+  function makeBus(onMsg) {
+    const clients = [], seen = new Set(), subs = new Set();
+    BROKERS.forEach(url => {
       try {
-        const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 4000);
-        const list = await (await fetch(TURN_URL, { signal: ctl.signal })).json();
-        clearTimeout(t);
-        if (Array.isArray(list)) servers.push(...list);
+        const c = mqtt.connect(url, { connectTimeout: 6000, reconnectPeriod: 3000, clean: true, keepalive: 30 });
+        c.on('connect', () => subs.forEach(t => c.subscribe(t)));
+        c.on('error', () => {});
+        c.on('message', (t, buf) => {
+          let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
+          if (!m || seen.has(m.mid)) return;
+          seen.add(m.mid); onMsg(t, m);
+        });
+        clients.push(c);
       } catch (e) {}
-    }
-    return { config: { iceServers: servers } };
+    });
+    return {
+      sub(t) { subs.add(t); clients.forEach(c => c.connected && c.subscribe(t)); },
+      pub(t, m) { m.mid = rand() + Date.now(); const s = JSON.stringify(m); clients.forEach(c => c.connected && c.publish(t, s)); },
+      up() { return clients.filter(c => c.connected).length; },
+      total: BROKERS.length
+    };
   }
 
-  function setStatus(text, cls) {
-    statusEl.textContent = text;
-    statusEl.className = cls || '';
+  function gathered(p, ms) {
+    return new Promise(res => {
+      if (p.iceGatheringState === 'complete') return res();
+      const t = setTimeout(res, ms);
+      p.addEventListener('icegatheringstatechange', () => { if (p.iceGatheringState === 'complete') { clearTimeout(t); res(); } });
+    });
   }
 
   async function getCamera() {
-    if (stream) stream.getTracks().forEach(t => t.stop());
+    const old = stream;
     stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }
     });
-    // Tell the browser this is writing: keep it sharp rather than smooth.
+    if (old) old.getTracks().forEach(t => t.stop());
+    // It's writing: keep it sharp rather than smooth.
     stream.getVideoTracks().forEach(t => { try { t.contentHint = 'text'; } catch (e) {} });
     v.srcObject = stream;
     await v.play().catch(() => {});
@@ -101,58 +124,41 @@
     try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
   }
 
-  async function connect() {
-    clearTimeout(retryTimer);
-    if (!running) return;
-    if (!peer || peer.destroyed) {
-      if (!opts) opts = await peerOptions();
-      peer = new Peer(opts);
-      peer.on('open', () => placeCall());
-      peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
-      peer.on('error', err => {
-        if (err.type === 'peer-unavailable') {
-          setStatus('Board not ready: open the camera slide (code ' + code + ')', 'wait');
-        } else {
-          setStatus('Reconnecting…', 'wait');
-        }
-        retry();
-      });
-    } else if (peer.open) {
-      placeCall();
+  function onMsg(topic, m) {
+    if (m.type === 'answer' && m.session === session && !answered && pc) {
+      answered = true; boardId = m.bid;
+      clearTimeout(offerTimer);
+      setStatus('Found the board, starting video…', 'wait');
+      pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }).catch(() => offer());
+    } else if (m.type === 'board-up' && running) {
+      const s = pc && pc.iceConnectionState;
+      if (!answered || m.bid !== boardId || s === 'failed' || s === 'disconnected' || s === 'closed') offer();
     }
   }
 
-  function placeCall() {
+  async function offer() {
     if (!running || !stream) return;
-    if (call) { try { call.close(); } catch (e) {} }
-    setStatus('Connecting to board ' + code + '…', 'wait');
-    call = peer.call(PREFIX + code, stream);
-    if (!call) { retry(); return; }
-    const pc = call.peerConnection, thisCall = call;
-    let sent = 0;
-    const watch = () => {
-      const s = pc && pc.iceConnectionState;
-      if ((s === 'connected' || s === 'completed') && sent === 0) setStatus('Linked to board, starting video…', 'wait');
-      if (s === 'failed') setStatus('Network blocked the video: use the same Wi-Fi as the board', 'wait');
-      if (s === 'failed' || s === 'closed') retry();
-    };
-    if (pc) pc.addEventListener('iceconnectionstatechange', watch);
-    // Writing on a board barely moves, so ~2.5 Mbps keeps it sharp without hogging the relay.
-    setTimeout(() => {
-      try {
-        pc.getSenders().forEach(sn => {
-          if (!sn.track || sn.track.kind !== 'video') return;
-          const prm = sn.getParameters(); if (!prm.encodings || !prm.encodings.length) prm.encodings = [{}];
-          prm.encodings[0].maxBitrate = 2500000; prm.degradationPreference = 'maintain-resolution';
-          sn.setParameters(prm).catch(() => {});
-        });
-      } catch (e) {}
-    }, 1500);
-    const t = setInterval(async () => {
-      if (call !== thisCall || !running) { clearInterval(t); return; }
+    clearTimeout(offerTimer); clearTimeout(failTimer); clearInterval(statTimer);
+    if (pc) try { pc.close(); } catch (e) {}
+    session = rand(); answered = false;
+    const p = pc = new RTCPeerConnection({ iceServers: ICE });
+    stream.getTracks().forEach(t => p.addTrack(t, stream));
+    bus.sub(TOPIC + code + '/cam/' + session);
+    bus.sub(TOPIC + code + '/cam');
+
+    p.addEventListener('iceconnectionstatechange', () => {
+      if (p !== pc) return;
+      const s = p.iceConnectionState;
+      if (s === 'connected' || s === 'completed') { clearTimeout(failTimer); capBitrate(p); }
+      if (s === 'failed') { setStatus('Lost the board, reconnecting…', 'wait'); setTimeout(offer, 1000); }
+      if (s === 'disconnected') { clearTimeout(failTimer); failTimer = setTimeout(() => { if (p === pc) offer(); }, 4000); }
+    });
+
+    statTimer = setInterval(async () => {
+      if (p !== pc) return;
       let frames = 0, codec = '?', size = '';
       try {
-        const st = await pc.getStats(), byId = {};
+        const st = await p.getStats(), byId = {};
         st.forEach(r => byId[r.id] = r);
         st.forEach(r => {
           if (r.type === 'outbound-rtp' && r.kind === 'video') {
@@ -162,49 +168,73 @@
           }
         });
       } catch (e) {}
-      sent = frames;
-      $('diag').textContent = [pc.iceConnectionState, codec, frames + ' sent', size].join(' · ');
-      const s = pc.iceConnectionState;
+      const s = p.iceConnectionState;
+      $('diag').textContent = ['services ' + bus.up() + '/' + bus.total, s, codec, frames + ' sent', size].join(' · ');
       if (frames > 0 && (s === 'connected' || s === 'completed')) setStatus('● LIVE on the board', 'live');
     }, 1000);
-    call.on('close', () => { if (running) { setStatus('Board closed, waiting…', 'wait'); retry(); } });
-    call.on('error', () => retry());
+
+    try {
+      await p.setLocalDescription(await p.createOffer());
+      await gathered(p, 1500);
+      if (p !== pc) return;
+      if (!bus.up()) setStatus('No internet connection: check Wi-Fi', 'wait');
+      else setStatus('Looking for board ' + code + '…', 'wait');
+      bus.pub(TOPIC + code + '/board', { type: 'offer', session, sdp: p.localDescription.sdp });
+    } catch (e) {}
+    offerTimer = setTimeout(() => {
+      if (p !== pc || answered) return;
+      setStatus(bus.up() ? 'Board ' + code + ' not found: is the board page open?' : 'No internet connection: check Wi-Fi', 'wait');
+      offer();
+    }, 5000);
   }
 
-  function retry() {
-    clearTimeout(retryTimer);
-    if (running) retryTimer = setTimeout(connect, 3000);
+  // Writing barely moves, so ~2.5 Mbps keeps it sharp without hogging the network.
+  function capBitrate(p) {
+    try {
+      p.getSenders().forEach(sn => {
+        if (!sn.track || sn.track.kind !== 'video') return;
+        const prm = sn.getParameters();
+        if (!prm.encodings || !prm.encodings.length) return;
+        prm.encodings[0].maxBitrate = 2500000;
+        sn.setParameters(prm).catch(() => {});
+      });
+    } catch (e) {}
   }
 
   $('go').onclick = async () => {
     code = $('code').value.replace(/\D/g, '');
-    if (code.length !== 4) { $('err').textContent = 'Type the 4-digit code from the board.'; return; }
-    try { localStorage.setItem('boardcam.code', code); } catch (e) {}
+    if (code.length !== 6) { $('err').textContent = 'Type the 6-digit code from the board.'; return; }
+    if (!window.mqtt) { $('err').textContent = 'Couldn’t load the page fully: check the internet and reload.'; return; }
     $('err').textContent = '';
-    try {
-      await getCamera();
-    } catch (e) {
-      $('err').textContent = 'Camera blocked. In Settings › Safari › Camera choose Allow, then try again.';
-      return;
-    }
+    try { await getCamera(); }
+    catch (e) { $('err').textContent = 'Camera blocked. In Settings › Safari › Camera choose Allow, then try again.'; return; }
     running = true;
+    if (!bus) bus = makeBus(onMsg);
     $('setup').classList.add('hide');
     $('bar').classList.remove('hide');
     statusEl.classList.remove('hide');
     $('diag').classList.remove('hide');
+    setStatus('Connecting…', 'wait');
     keepAwake();
-    connect();
+    // Give the services a moment to connect, then call the board.
+    const t0 = Date.now();
+    const wait = setInterval(() => { if (bus.up() || Date.now() - t0 > 4000) { clearInterval(wait); offer(); } }, 150);
   };
 
   $('flip').onclick = async () => {
     facing = facing === 'environment' ? 'user' : 'environment';
-    try { await getCamera(); placeCall(); } catch (e) {}
+    try {
+      await getCamera();
+      const sn = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sn) await sn.replaceTrack(stream.getVideoTracks()[0]); else offer();
+    } catch (e) {}
   };
 
   $('stop').onclick = () => {
     running = false;
-    clearTimeout(retryTimer);
-    if (call) try { call.close(); } catch (e) {}
+    clearTimeout(offerTimer); clearTimeout(failTimer); clearInterval(statTimer);
+    if (pc) try { pc.close(); } catch (e) {}
+    pc = null;
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null;
     if (wakeLock) try { wakeLock.release(); } catch (e) {}
@@ -216,15 +246,11 @@
 
   // iPad/iPhone pause the camera when Safari goes to the background; restart on return.
   document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible' && running) {
-      keepAwake();
-      const dead = !stream || stream.getVideoTracks().every(t => t.readyState === 'ended');
-      if (dead) { try { await getCamera(); } catch (e) {} }
-      placeCall();
-    }
+    if (document.visibilityState !== 'visible' || !running) return;
+    keepAwake();
+    const dead = !stream || stream.getVideoTracks().every(t => t.readyState === 'ended');
+    if (dead) { try { await getCamera(); } catch (e) {} offer(); }
   });
-
-  if (code.length === 4 && params.get('c')) $('go').focus();
 })();
 </script>
 </body>

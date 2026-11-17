@@ -25,7 +25,7 @@
   #win.live #join { display: none; }
   #qr { background: #fff; padding: 12px; border-radius: 12px; }
   #qr img, #qr canvas { display: block; width: 190px; height: 190px; }
-  .big { font-size: 64px; font-weight: 800; letter-spacing: 12px; }
+  .big { font-size: 56px; font-weight: 800; letter-spacing: 8px; }
   .steps { font-size: 18px; line-height: 1.55; max-width: 420px; }
   .steps b { color: #c4b5fd; }
   #msg { color: #fda29b; font-weight: 700; margin-top: 8px; }
@@ -54,7 +54,7 @@
     <div id="qr"></div>
     <div>
       <div class="steps">On the iPad or phone, scan this QR code with the <b>Camera app</b>, or open<br><b id="url"></b><br>and type the code:</div>
-      <div class="big" id="code">····</div>
+      <div class="big" id="code">······</div>
       <div class="steps" id="state">Getting ready…</div>
       <div id="msg"></div>
     </div>
@@ -68,37 +68,64 @@
   <button id="newcode">🔢 New code</button>
 </div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.16.1/dist/mqtt.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 (() => {
   const CAM_URL = 'https://contactjosephr04-sudo.github.io/bus-live/cam/';
-  const PREFIX = 'willowcam-';
+  // ---- Shared settings (must match the camera page) ----
+  const TOPIC = 'boardcam-willow-7f3a/';
+  const BROKERS = window.BOARDCAM_BROKERS || [
+    'wss://broker.hivemq.com:8884/mqtt',
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://test.mosquitto.org:8081/mqtt'
+  ];
+  const ICE = (window.BOARDCAM_ICE || []).concat([{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }]);
+
   const $ = id => document.getElementById(id);
   const win = $('win'), v = $('v'), frozen = $('frozen');
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set(k, val) { try { localStorage.setItem(k, val); } catch (e) {} }
   };
-  let code = store.get('boardcam.code') || newCode();
-  let peer = null, current = null;
+  const rand = () => Math.random().toString(36).slice(2, 10);
+  const newCode = () => String(Math.floor(100000 + Math.random() * 900000));
+  let code = store.get('boardcam.code6') || newCode();
+  store.set('boardcam.code6', code);
+  const BID = rand();
+  let bus = null, pc = null, session = null, statTimer = null, failTimer = null;
 
-  // Relay server (TURN) so the phone and board can link across different networks.
-  const TURN_URL = '';
-  async function peerOptions() {
-    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
-    if (TURN_URL) {
+  function makeBus(onMsg, onUp) {
+    const clients = [], seen = new Set(), subs = new Set();
+    BROKERS.forEach(url => {
       try {
-        const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 4000);
-        const list = await (await fetch(TURN_URL, { signal: ctl.signal })).json();
-        clearTimeout(t);
-        if (Array.isArray(list)) servers.push(...list);
+        const c = mqtt.connect(url, { connectTimeout: 6000, reconnectPeriod: 3000, clean: true, keepalive: 30 });
+        c.on('connect', () => { subs.forEach(t => c.subscribe(t)); onUp(c); });
+        c.on('error', () => {});
+        c.on('message', (t, buf) => {
+          let m; try { m = JSON.parse(buf.toString()); } catch (e) { return; }
+          if (!m || seen.has(m.mid)) return;
+          seen.add(m.mid); onMsg(t, m);
+        });
+        clients.push(c);
       } catch (e) {}
-    }
-    return { config: { iceServers: servers } };
+    });
+    return {
+      sub(t) { subs.add(t); clients.forEach(c => c.connected && c.subscribe(t)); },
+      unsub(t) { subs.delete(t); clients.forEach(c => c.connected && c.unsubscribe(t)); },
+      pub(t, m) { m.mid = rand() + Date.now(); const s = JSON.stringify(m); clients.forEach(c => c.connected && c.publish(t, s)); },
+      up() { return clients.filter(c => c.connected).length; },
+      total: BROKERS.length
+    };
   }
 
-  function newCode() { return String(Math.floor(1000 + Math.random() * 9000)); }
+  function gathered(p, ms) {
+    return new Promise(res => {
+      if (p.iceGatheringState === 'complete') return res();
+      const t = setTimeout(res, ms);
+      p.addEventListener('icegatheringstatechange', () => { if (p.iceGatheringState === 'complete') { clearTimeout(t); res(); } });
+    });
+  }
 
   function showJoin() {
     $('code').textContent = code;
@@ -107,91 +134,90 @@
     if (window.QRCode) new QRCode($('qr'), { text: CAM_URL + '?c=' + code, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M });
   }
 
-  setInterval(() => {
-    const st = !window.Peer ? 'connection script did not load (internet/filter?)'
-      : !peer ? 'starting' : peer.destroyed ? 'stopped' : peer.disconnected ? 'lost the connecting service, retrying' : peer.open ? 'ready, waiting for camera' : 'reaching the connecting service…';
-    $('always').textContent = 'Board code ' + code + ' · ' + st + (current ? ' · camera found' : '');
-  }, 1000);
-  async function start() {
-    if (!window.Peer) { $('state').textContent = ''; $('msg').textContent = 'No internet connection, so the camera link can’t start.'; return; }
-    if (peer) peer.destroy();
+  function announce() { if (bus) bus.pub(TOPIC + code + '/cam', { type: 'board-up', bid: BID }); }
+
+  function listen() {
     showJoin();
-    $('msg').textContent = '';
-    $('state').textContent = 'Getting ready…';
-    const opts = await peerOptions();
-    peer = new Peer(PREFIX + code, opts);
-    peer.on('open', () => { store.set('boardcam.code', code); $('state').textContent = 'Waiting for the camera…'; });
-    peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
-    peer.on('error', err => {
-      if (err.type === 'unavailable-id') { code = newCode(); start(); return; }
-      if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') {
-        $('msg').textContent = 'Can’t reach the camera service, trying again…';
-        setTimeout(start, 4000);
-      }
-    });
-    peer.on('call', call => {
-      if (current) try { current.close(); } catch (e) {}
-      current = call;
-      win.classList.remove('live'); win.classList.add('linking');
-      $('waitMsg').textContent = '📱 Camera found, connecting video…'; $('waitSub').textContent = '';
-      call.answer(undefined, { sdpTransform: preferVP8 });
-      call.on('stream', s => { v.srcObject = s; v.play().catch(() => {}); });
-      const lost = () => {
-        if (current !== call) return;
-        clearInterval(statTimer); clearTimeout(failTimer);
-        win.classList.remove('live', 'linking'); current = null;
-        $('state').textContent = 'Camera disconnected, waiting…';
-      };
-      call.on('close', lost);
-      call.on('error', lost);
-      const pc = call.peerConnection;
-      const fail = why => {
-        if (current !== call) return;
-        $('waitMsg').textContent = '⚠️ The video couldn’t get through';
-        $('waitSub').textContent = why;
-      };
-      const failTimer = setTimeout(() => { if (!win.classList.contains('live')) fail('Put the phone/iPad on the same Wi-Fi as this computer (not mobile data), then tap Stop and Start camera on it.'); }, 15000);
-      if (pc) pc.addEventListener('iceconnectionstatechange', () => {
-        if (pc.iceConnectionState === 'failed') fail('The network blocked the link. Put the phone/iPad on the same Wi-Fi as this computer (not mobile data).');
-      });
-      const statTimer = setInterval(async () => {
-        if (current !== call || !pc) { clearInterval(statTimer); return; }
-        let link = pc.iceConnectionState, codec = '?', frames = 0, size = '', route = '';
-        try {
-          const st = await pc.getStats(), byId = {};
-          st.forEach(r => byId[r.id] = r);
-          st.forEach(r => {
-            if (r.type === 'inbound-rtp' && r.kind === 'video') {
-              frames = r.framesDecoded || 0;
-              if (r.frameWidth) size = r.frameWidth + '×' + r.frameHeight;
-              if (r.codecId && byId[r.codecId]) codec = byId[r.codecId].mimeType.replace('video/', '');
-            }
-            if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') {
-              const l = byId[r.localCandidateId], rm = byId[r.remoteCandidateId];
-              if (l && rm) route = l.candidateType + '→' + rm.candidateType;
-            }
-          });
-        } catch (e) {}
-        $('diag').textContent = [link, route, codec, frames + ' frames', size].filter(Boolean).join(' · ');
-        if (frames > 0 && v.videoWidth > 0) {
-          win.classList.remove('linking'); win.classList.add('live'); clearTimeout(failTimer);
-        } else if (frames === 0 && (link === 'connected' || link === 'completed') && !win.classList.contains('live')) {
-          $('waitSub').textContent = 'Linked, waiting for the first picture (' + codec + ')…';
-        }
-      }, 1000);
-    });
+    bus.sub(TOPIC + code + '/board');
+    announce();
   }
 
-  // Ask the phone to send VP8 (decodes on every computer) rather than H.264.
-  function preferVP8(sdp) {
-    return sdp.split('\r\n').reduce((out, line, i, lines) => {
-      if (line.startsWith('m=video')) {
-        const parts = line.split(' '), head = parts.slice(0, 3), pts = parts.slice(3);
-        const vp8 = lines.filter(l => /^a=rtpmap:\d+ VP8\//i.test(l)).map(l => l.split(':')[1].split(' ')[0]);
-        line = head.concat(vp8.filter(p => pts.includes(p)), pts.filter(p => !vp8.includes(p))).join(' ');
-      }
-      out.push(line); return out;
-    }, []).join('\r\n');
+  function reset(msg) {
+    clearInterval(statTimer); clearTimeout(failTimer);
+    if (pc) try { pc.close(); } catch (e) {}
+    pc = null;
+    win.classList.remove('live', 'linking');
+    if (msg) $('state').textContent = msg;
+  }
+
+  async function onOffer(m) {
+    reset();
+    session = m.session;
+    win.classList.add('linking');
+    $('waitMsg').textContent = '📱 Camera found, connecting video…'; $('waitSub').textContent = '';
+    const p = pc = new RTCPeerConnection({ iceServers: ICE });
+    p.ontrack = e => { v.srcObject = e.streams[0] || new MediaStream([e.track]); v.play().catch(() => {}); };
+    const fail = why => { if (p !== pc) return; $('waitMsg').textContent = '⚠️ The video couldn’t get through'; $('waitSub').textContent = why; };
+    p.addEventListener('iceconnectionstatechange', () => {
+      if (p !== pc) return;
+      const s = p.iceConnectionState;
+      if (s === 'failed') fail('The two networks won’t let the video through. Put the iPad/phone on the same Wi-Fi as this computer.');
+      if (s === 'disconnected') { failTimer = setTimeout(() => { if (p === pc && p.iceConnectionState !== 'connected') reset('Camera disconnected, waiting…'); }, 6000); }
+      if (s === 'connected' || s === 'completed') clearTimeout(failTimer);
+      if (s === 'closed') reset('Camera disconnected, waiting…');
+    });
+    try {
+      await p.setRemoteDescription({ type: 'offer', sdp: m.sdp });
+      // Ask for VP8: every computer's Chrome can show it.
+      try {
+        const caps = RTCRtpReceiver.getCapabilities('video').codecs;
+        const order = caps.filter(c => /vp8/i.test(c.mimeType)).concat(caps.filter(c => !/vp8/i.test(c.mimeType)));
+        p.getTransceivers().forEach(t => { if (t.receiver.track.kind === 'video' && t.setCodecPreferences) t.setCodecPreferences(order); });
+      } catch (e) {}
+      await p.setLocalDescription(await p.createAnswer());
+      await gathered(p, 1500);
+      if (p !== pc) return;
+      bus.pub(TOPIC + code + '/cam/' + session, { type: 'answer', session, bid: BID, sdp: p.localDescription.sdp });
+    } catch (e) { fail('Something went wrong setting up the video. Tap Stop then Start camera on the iPad.'); return; }
+
+    failTimer = setTimeout(() => { if (p === pc && !win.classList.contains('live')) fail('Put the iPad/phone on the same Wi-Fi as this computer, then tap Stop and Start camera on it.'); }, 15000);
+    statTimer = setInterval(async () => {
+      if (p !== pc) return;
+      let codec = '?', frames = 0, size = '', route = '';
+      try {
+        const st = await p.getStats(), byId = {};
+        st.forEach(r => byId[r.id] = r);
+        st.forEach(r => {
+          if (r.type === 'inbound-rtp' && r.kind === 'video') {
+            frames = r.framesDecoded || 0;
+            if (r.frameWidth) size = r.frameWidth + '×' + r.frameHeight;
+            if (r.codecId && byId[r.codecId]) codec = byId[r.codecId].mimeType.replace('video/', '');
+          }
+          if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') {
+            const l = byId[r.localCandidateId], rm = byId[r.remoteCandidateId];
+            if (l && rm) route = l.candidateType + '→' + rm.candidateType;
+          }
+        });
+      } catch (e) {}
+      const s = p.iceConnectionState;
+      $('diag').textContent = [s, route, codec, frames + ' frames', size].filter(Boolean).join(' · ');
+      if (frames > 0 && v.videoWidth > 0) { win.classList.remove('linking'); win.classList.add('live'); clearTimeout(failTimer); }
+      else if (frames === 0 && (s === 'connected' || s === 'completed')) $('waitSub').textContent = 'Linked, waiting for the first picture…';
+    }, 1000);
+  }
+
+  function start() {
+    showJoin();
+    if (!window.mqtt) { $('state').textContent = ''; $('msg').textContent = 'The page couldn’t load its connection part: check the internet and reload.'; return; }
+    $('state').textContent = 'Getting ready…';
+    bus = makeBus((t, m) => { if (m.type === 'offer' && t === TOPIC + code + '/board') onOffer(m); }, () => announce());
+    listen();
+    setInterval(() => {
+      const up = bus.up();
+      if (!pc) $('state').textContent = up ? 'Ready: waiting for the camera…' : 'Connecting…';
+      $('msg').textContent = up ? '' : 'Can’t reach the internet services yet, still trying…';
+      $('always').textContent = 'Board code ' + code + ' · services ' + up + '/' + bus.total + (pc ? ' · camera found' : '');
+    }, 1000);
   }
 
   $('freeze').onclick = () => {
@@ -203,7 +229,12 @@
   };
   $('rot').onclick = () => $('rot').classList.toggle('on', win.classList.toggle('rot'));
   $('fill').onclick = () => $('fill').classList.toggle('on', win.classList.toggle('fill'));
-  $('newcode').onclick = () => { code = newCode(); win.classList.remove('live', 'linking'); start(); };
+  $('newcode').onclick = () => {
+    if (bus) bus.unsub(TOPIC + code + '/board');
+    reset();
+    code = newCode(); store.set('boardcam.code6', code);
+    if (bus) listen(); else showJoin();
+  };
 
   start();
 })();
