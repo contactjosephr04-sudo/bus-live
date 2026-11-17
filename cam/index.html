@@ -63,7 +63,22 @@
   $('code').value = code;
 
   let stream = null, peer = null, call = null, facing = 'environment';
-  let wakeLock = null, retryTimer = null, running = false;
+  let wakeLock = null, retryTimer = null, running = false, opts = null;
+
+  // Relay server (TURN) so the phone and board can link across different networks.
+  const TURN_URL = '';
+  async function peerOptions() {
+    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    if (TURN_URL) {
+      try {
+        const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 4000);
+        const list = await (await fetch(TURN_URL, { signal: ctl.signal })).json();
+        clearTimeout(t);
+        if (Array.isArray(list)) servers.push(...list);
+      } catch (e) {}
+    }
+    return { config: { iceServers: servers } };
+  }
 
   function setStatus(text, cls) {
     statusEl.textContent = text;
@@ -86,11 +101,12 @@
     try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
   }
 
-  function connect() {
+  async function connect() {
     clearTimeout(retryTimer);
     if (!running) return;
     if (!peer || peer.destroyed) {
-      peer = new Peer();
+      if (!opts) opts = await peerOptions();
+      peer = new Peer(opts);
       peer.on('open', () => placeCall());
       peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
       peer.on('error', err => {
@@ -121,6 +137,17 @@
       if (s === 'failed' || s === 'closed') retry();
     };
     if (pc) pc.addEventListener('iceconnectionstatechange', watch);
+    // Writing on a board barely moves, so ~2.5 Mbps keeps it sharp without hogging the relay.
+    setTimeout(() => {
+      try {
+        pc.getSenders().forEach(sn => {
+          if (!sn.track || sn.track.kind !== 'video') return;
+          const prm = sn.getParameters(); if (!prm.encodings || !prm.encodings.length) prm.encodings = [{}];
+          prm.encodings[0].maxBitrate = 2500000; prm.degradationPreference = 'maintain-resolution';
+          sn.setParameters(prm).catch(() => {});
+        });
+      } catch (e) {}
+    }, 1500);
     const t = setInterval(async () => {
       if (call !== thisCall || !running) { clearInterval(t); return; }
       let frames = 0, codec = '?', size = '';
