@@ -69,7 +69,7 @@
   let code = (params.get('c') || '').replace(/\D/g, '').slice(0, 6);
   $('code').value = code;
 
-  let stream = null, pc = null, session = null, answered = false, running = false, boardId = null;
+  let stream = null, pc = null, session = null, answered = false, running = false, boardId = null, pendingCands = [];
   let facing = 'environment', wakeLock = null, offerTimer = null, failTimer = null, statTimer = null, bus = null;
 
   const rand = () => Math.random().toString(36).slice(2, 10);
@@ -129,7 +129,12 @@
       answered = true; boardId = m.bid;
       clearTimeout(offerTimer);
       setStatus('Found the board, starting video…', 'wait');
-      pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }).catch(() => offer());
+      const p = pc;
+      p.setRemoteDescription({ type: 'answer', sdp: m.sdp })
+        .then(() => { pendingCands.forEach(c => p.addIceCandidate(c).catch(() => {})); pendingCands = []; })
+        .catch(() => offer());
+    } else if (m.type === 'cand' && m.session === session && pc) {
+      if (pc.remoteDescription) pc.addIceCandidate(m.c).catch(() => {}); else pendingCands.push(m.c);
     } else if (m.type === 'board-up' && running) {
       const s = pc && pc.iceConnectionState;
       if (!answered || m.bid !== boardId || s === 'failed' || s === 'disconnected' || s === 'closed') offer();
@@ -140,11 +145,15 @@
     if (!running || !stream) return;
     clearTimeout(offerTimer); clearTimeout(failTimer); clearInterval(statTimer);
     if (pc) try { pc.close(); } catch (e) {}
-    session = rand(); answered = false;
+    session = rand(); answered = false; pendingCands = [];
     const p = pc = new RTCPeerConnection({ iceServers: ICE });
     stream.getTracks().forEach(t => p.addTrack(t, stream));
     bus.sub(TOPIC + code + '/cam/' + session);
     bus.sub(TOPIC + code + '/cam');
+    const mySession = session;
+    p.onicecandidate = e => {
+      if (e.candidate && p === pc) bus.pub(TOPIC + code + '/board', { type: 'cand', session: mySession, c: e.candidate.toJSON() });
+    };
 
     p.addEventListener('iceconnectionstatechange', () => {
       if (p !== pc) return;
@@ -175,7 +184,6 @@
 
     try {
       await p.setLocalDescription(await p.createOffer());
-      await gathered(p, 1500);
       if (p !== pc) return;
       if (!bus.up()) setStatus('No internet connection: check Wi-Fi', 'wait');
       else setStatus('Looking for board ' + code + '…', 'wait');

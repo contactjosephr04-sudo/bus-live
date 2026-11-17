@@ -94,6 +94,7 @@
   store.set('boardcam.code6', code);
   const BID = rand();
   let localOK = null;
+  const early = {};  // candidates that arrive before their offer
   let bus = null, pc = null, session = null, statTimer = null, failTimer = null;
 
   function makeBus(onMsg, onUp) {
@@ -157,6 +158,10 @@
     win.classList.add('linking');
     $('waitMsg').textContent = '📱 Camera found, connecting video…'; $('waitSub').textContent = '';
     const p = pc = new RTCPeerConnection({ iceServers: ICE });
+    const mySession = session;
+    p.onicecandidate = e => {
+      if (e.candidate && p === pc) bus.pub(TOPIC + code + '/cam/' + mySession, { type: 'cand', session: mySession, c: e.candidate.toJSON() });
+    };
     p.ontrack = e => { v.srcObject = e.streams[0] || new MediaStream([e.track]); v.play().catch(() => {}); };
     const fail = async why => {
       if (p !== pc) return;
@@ -164,7 +169,10 @@
       let mine = new Set(), theirs = new Set(), tried = 0;
       try {
         (await p.getStats()).forEach(r => {
-          const kind = c => c.candidateType + ((c.address || '').endsWith('.local') || !c.address ? '(hidden)' : '');
+          const net = a => !a ? 'hidden' : a.endsWith('.local') ? 'hidden' : a.includes(':') ? 'IPv6'
+            : /^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))/.test(a) ? a.split('.').slice(0, 3).join('.') + '.x'
+            : /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a) ? 'mobile network' : 'internet';
+          const kind = c => c.candidateType + '(' + net(c.address || c.ip) + ')';
           if (r.type === 'local-candidate') mine.add(kind(r));
           if (r.type === 'remote-candidate') theirs.add(kind(r));
           if (r.type === 'candidate-pair') tried++;
@@ -191,8 +199,9 @@
         const order = caps.filter(c => /vp8/i.test(c.mimeType)).concat(caps.filter(c => !/vp8/i.test(c.mimeType)));
         p.getTransceivers().forEach(t => { if (t.receiver.track.kind === 'video' && t.setCodecPreferences) t.setCodecPreferences(order); });
       } catch (e) {}
+      (early[mySession] || []).forEach(c => p.addIceCandidate(c).catch(() => {}));
+      delete early[mySession];
       await p.setLocalDescription(await p.createAnswer());
-      await gathered(p, 1500);
       if (p !== pc) return;
       bus.pub(TOPIC + code + '/cam/' + session, { type: 'answer', session, bid: BID, sdp: p.localDescription.sdp });
     } catch (e) { fail('Something went wrong setting up the video. Tap Stop then Start camera on the iPad.'); return; }
@@ -242,7 +251,14 @@
     unlockLocalLink().then(ok => { localOK = ok; });
     if (!window.mqtt) { $('state').textContent = ''; $('msg').textContent = 'The page couldn’t load its connection part: check the internet and reload.'; return; }
     $('state').textContent = 'Getting ready…';
-    bus = makeBus((t, m) => { if (m.type === 'offer' && t === TOPIC + code + '/board') onOffer(m); }, () => announce());
+    bus = makeBus((t, m) => {
+      if (t !== TOPIC + code + '/board') return;
+      if (m.type === 'offer') onOffer(m);
+      else if (m.type === 'cand') {
+        if (pc && m.session === session && pc.remoteDescription) pc.addIceCandidate(m.c).catch(() => {});
+        else (early[m.session] = early[m.session] || []).push(m.c);
+      }
+    }, () => announce());
     listen();
     setInterval(() => {
       const up = bus.up();
