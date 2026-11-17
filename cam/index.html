@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Board Camera</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #111; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #stage { flex: 1; position: relative; overflow: hidden; background: #000; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #status { position: absolute; top: 12px; left: 12px; padding: 8px 14px; border-radius: 999px;
+    font-weight: 700; font-size: 16px; background: #444; }
+  #status.live { background: #d92d20; }
+  #status.wait { background: #b54708; }
+  #bar { display: flex; gap: 10px; padding: 12px; justify-content: center; flex-wrap: wrap; background: #111; }
+  button { font: inherit; font-size: 18px; font-weight: 700; border: 0; border-radius: 14px;
+    padding: 14px 20px; background: #2b2b2b; color: #fff; }
+  button.primary { background: #6941c6; }
+  #setup { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 18px; padding: 24px; text-align: center; background: #111; }
+  #setup h1 { margin: 0; font-size: 28px; }
+  #setup p { margin: 0; color: #bbb; font-size: 17px; max-width: 420px; line-height: 1.4; }
+  #code { font-size: 40px; letter-spacing: 10px; width: 220px; text-align: center; padding: 10px;
+    border-radius: 14px; border: 2px solid #555; background: #000; color: #fff; }
+  #err { color: #fda29b; font-weight: 600; min-height: 1.2em; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="v" playsinline autoplay muted></video>
+  <div id="status" class="hide">Connecting…</div>
+  <div id="setup">
+    <h1>📷 Board Camera</h1>
+    <p>Sends this camera to the board. Type the 4-digit code shown on the board, or scan the board's QR code.</p>
+    <input id="code" inputmode="numeric" maxlength="4" placeholder="0000" autocomplete="off">
+    <button class="primary" id="go">Start camera</button>
+    <div id="err"></div>
+  </div>
+</div>
+<div id="bar" class="hide">
+  <button id="flip">🔄 Switch camera</button>
+  <button id="stop">✕ Stop</button>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(() => {
+  const PREFIX = 'willowcam-';
+  const params = new URLSearchParams(location.search);
+  const $ = id => document.getElementById(id);
+  const v = $('v'), statusEl = $('status');
+  let code = (params.get('c') || '').replace(/\D/g, '').slice(0, 4);
+  try { if (!code) code = localStorage.getItem('boardcam.code') || ''; } catch (e) {}
+  $('code').value = code;
+
+  let stream = null, peer = null, call = null, facing = 'environment';
+  let wakeLock = null, retryTimer = null, running = false;
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls || '';
+  }
+
+  async function getCamera() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+    // Tell the browser this is writing: keep it sharp rather than smooth.
+    stream.getVideoTracks().forEach(t => { try { t.contentHint = 'text'; } catch (e) {} });
+    v.srcObject = stream;
+    await v.play().catch(() => {});
+  }
+
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+
+  function connect() {
+    clearTimeout(retryTimer);
+    if (!running) return;
+    if (!peer || peer.destroyed) {
+      peer = new Peer();
+      peer.on('open', () => placeCall());
+      peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
+      peer.on('error', err => {
+        if (err.type === 'peer-unavailable') {
+          setStatus('Board not ready: open the camera slide (code ' + code + ')', 'wait');
+        } else {
+          setStatus('Reconnecting…', 'wait');
+        }
+        retry();
+      });
+    } else if (peer.open) {
+      placeCall();
+    }
+  }
+
+  function placeCall() {
+    if (!running || !stream) return;
+    if (call) { try { call.close(); } catch (e) {} }
+    setStatus('Connecting to board ' + code + '…', 'wait');
+    call = peer.call(PREFIX + code, stream);
+    if (!call) { retry(); return; }
+    const pc = call.peerConnection;
+    const watch = () => {
+      const s = pc && (pc.connectionState || pc.iceConnectionState);
+      if (s === 'connected' || s === 'completed') setStatus('● LIVE on the board', 'live');
+      if (s === 'failed' || s === 'disconnected' || s === 'closed') { setStatus('Lost the board, reconnecting…', 'wait'); retry(); }
+    };
+    if (pc) { pc.addEventListener('connectionstatechange', watch); pc.addEventListener('iceconnectionstatechange', watch); }
+    call.on('close', () => { if (running) { setStatus('Board closed, waiting…', 'wait'); retry(); } });
+    call.on('error', () => retry());
+  }
+
+  function retry() {
+    clearTimeout(retryTimer);
+    if (running) retryTimer = setTimeout(connect, 3000);
+  }
+
+  $('go').onclick = async () => {
+    code = $('code').value.replace(/\D/g, '');
+    if (code.length !== 4) { $('err').textContent = 'Type the 4-digit code from the board.'; return; }
+    try { localStorage.setItem('boardcam.code', code); } catch (e) {}
+    $('err').textContent = '';
+    try {
+      await getCamera();
+    } catch (e) {
+      $('err').textContent = 'Camera blocked. In Settings › Safari › Camera choose Allow, then try again.';
+      return;
+    }
+    running = true;
+    $('setup').classList.add('hide');
+    $('bar').classList.remove('hide');
+    statusEl.classList.remove('hide');
+    keepAwake();
+    connect();
+  };
+
+  $('flip').onclick = async () => {
+    facing = facing === 'environment' ? 'user' : 'environment';
+    try { await getCamera(); placeCall(); } catch (e) {}
+  };
+
+  $('stop').onclick = () => {
+    running = false;
+    clearTimeout(retryTimer);
+    if (call) try { call.close(); } catch (e) {}
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = null;
+    if (wakeLock) try { wakeLock.release(); } catch (e) {}
+    $('setup').classList.remove('hide');
+    $('bar').classList.add('hide');
+    statusEl.classList.add('hide');
+  };
+
+  // iPad/iPhone pause the camera when Safari goes to the background; restart on return.
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && running) {
+      keepAwake();
+      const dead = !stream || stream.getVideoTracks().every(t => t.readyState === 'ended');
+      if (dead) { try { await getCamera(); } catch (e) {} }
+      placeCall();
+    }
+  });
+
+  if (code.length === 4 && params.get('c')) $('go').focus();
+})();
+</script>
+</body>
+</html>
