@@ -146,7 +146,7 @@ safe-buffer/index.js:
     $('code').textContent = code;
     $('url').textContent = CAM_URL.replace('https://', '');
     $('qr').innerHTML = '';
-    if (window.QRCode) new QRCode($('qr'), { text: CAM_URL + '?v=4&c=' + code, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M });
+    if (window.QRCode) new QRCode($('qr'), { text: CAM_URL + '?v=5&c=' + code, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M });
   }
 
   function announce() { if (bus) bus.pub(TOPIC + code + '/cam', { type: 'board-up', bid: BID }); }
