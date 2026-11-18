@@ -96,6 +96,8 @@ footer a{color:var(--brand)}
 (function(){
 var API="https://bustimes.org/";
 var SERVICES=[{id:54596,line:"157"},{id:54597,line:"357"}];
+var LINES=/^(157|357)$/;
+var KEYSTOPS=["1100DEC10760","1100DEC10787","1100DEC10786"];
 var BBOX="ymax=50.73&xmax=-3.18&ymin=50.58&xmin=-3.46";
 var PLACES=[
   {id:"bud",label:"Budleigh Salterton Public Hall",short:"Budleigh Public Hall",match:"public hall",gm:"Public Hall bus stop, Station Road, Budleigh Salterton"},
@@ -119,15 +121,40 @@ function isWeekday(){var w=theDate().getDay();return w>0&&w<6;}
 function getJSON(path){var o={};try{var ac=new AbortController();o.signal=ac.signal;setTimeout(function(){ac.abort();},12000);}catch(e){}
   return fetch(API+path,o).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});}
 
+/* bustimes.org renumbers its routes whenever new timetables arrive, so look the 157 and 357 up fresh each time */
+function discover(){
+  var found={};
+  function add(id,line){if(id&&line&&LINES.test(line))found[id]=line;}
+  var jobs=[getJSON("vehicles.json?"+BBOX).then(function(v){(v||[]).forEach(function(x){add(x.service_id,x.service&&x.service.line_name);});},function(){})];
+  KEYSTOPS.forEach(function(s){jobs.push(getJSON("api/trips/?stop="+s).then(function(a){(a&&a.results||[]).forEach(function(t){
+    if(t.service&&(!t.operator||t.operator.noc==="SDVN"))add(t.service.id,t.service.line_name);});},function(){}));});
+  return Promise.all(jobs).then(function(){
+    var list=Object.keys(found).map(function(k){return{id:+k,line:found[k]};});
+    if(list.length){ls("bl_svc",list);S.svcSource="found";return list;}
+    var known=ls("bl_svc");S.svcSource="saved";
+    return known&&known.length?known:SERVICES;
+  });
+}
+function tripsFor(s){
+  var out=[];
+  function page(path,n){return getJSON(path).then(function(a){
+    (a.results||[]).forEach(function(x){out.push({id:x.id,start:hm(x.start),end:hm(x.end),head:x.headsign||"",tmc:x.ticket_machine_code||"",block:x.block||"",line:s.line,sid:s.id});});
+    if(a.next&&n<4)return page(a.next.replace(API,""),n+1);});}
+  return page("api/trips/?service="+s.id,0).then(function(){return out;},function(e){S.errDetail="route "+s.line+" ("+s.id+"): "+e.message;return [];});
+}
 function loadLists(){
-  if(S.lists)return Promise.resolve();
-  return Promise.all(SERVICES.map(function(s){return getJSON("api/trips/?service="+s.id).then(function(a){
-    return a.results.map(function(x){return{id:x.id,start:hm(x.start),end:hm(x.end),head:x.headsign||"",tmc:x.ticket_machine_code||"",block:x.block||"",line:s.line,sid:s.id};});});}))
-  .then(function(r){S.lists=r[0].concat(r[1]);});
+  if(S.lists&&S.lists.length)return Promise.resolve();
+  S.errDetail=null;
+  return discover().then(function(svcs){S.svcs=svcs;return Promise.all(svcs.map(tripsFor));})
+  .then(function(r){S.lists=[].concat.apply([],r);if(!S.lists.length)throw new Error(S.errDetail||"no timetable found for the 157 or 357");});
 }
 function buildCands(){
   var g=groups(),from=S.day===0?nowMin()-20:0;
-  S.cands=S.lists.filter(function(t){return g.indexOf(t.tmc.charAt(0))>=0&&t.end>=from;}).sort(function(a,b){return a.start-b.start;});
+  var later=S.lists.filter(function(t){return t.end>=from;});
+  S.cands=later.filter(function(t){return g.indexOf(t.tmc.charAt(0))>=0;});
+  /* if the day-of-week codes have changed, show every trip rather than none */
+  if(!S.cands.length)S.cands=later;
+  S.cands.sort(function(a,b){return a.start-b.start;});
   S.used=0;S.matches=[];
 }
 function getDetail(t){
@@ -154,7 +181,7 @@ function loadMore(rounds){
 function reload(){
   S.loading=true;S.err=null;render();
   return loadLists().then(function(){buildCands();return loadMore(4);}).then(function(){S.loading=false;return poll();})
-  .catch(function(e){S.loading=false;S.err="Could not load the timetable. Check your signal, then tap Refresh.";render();});
+  .catch(function(e){S.loading=false;S.lists=null;S.err="Could not load the timetable. Use Google Maps for now, then tap Refresh to try again.";S.errDetail=S.errDetail||String(e&&e.message||e);render();});
 }
 function poll(){
   if(S.day!==0){S.byTrip={};S.byBlock={};S.updated=new Date();render();return Promise.resolve();}
@@ -230,7 +257,7 @@ function alertHTML(m){
   if(!msg&&m&&S.day===0){var L=live(m);
     if(L&&L.age>3)msg="This bus last reported its position "+Math.round(L.age)+" min ago, so the times here may be wrong.";
     else if(!L&&tripStatus(m,null).t==="No sign of this bus")msg="This bus should be on its way but is not being tracked. It may be cancelled, or its tracker may be off.";}
-  return msg?'<div class="card alert">'+esc(msg)+gmLink()+'</div>':'';
+  return msg?'<div class="card alert">'+esc(msg)+gmLink()+(S.errDetail?'<div class="note">Details for Claude: '+esc(S.errDetail)+'</div>':'')+'</div>':'';
 }
 function metres(a,b){var r=Math.PI/180,x=(b[0]-a[0])*r*Math.cos((a[1]+b[1])/2*r),y=(b[1]-a[1])*r;return Math.sqrt(x*x+y*y)*6371000;}
 function walk(m){if(!S.pos)return null;var d=metres(S.pos,m.d.stops[m.i].xy);return{d:d,min:Math.max(1,Math.ceil(d*1.3/80))};}
@@ -278,7 +305,12 @@ function homeHTML(){
   h+=alertHTML(null);
   h+='<h2>Departures</h2>';
   if(S.pin&&S.day===0)list.sort(function(a,b){return (b.d.id===S.pin)-(a.d.id===S.pin)||a.dep-b.dep;});
-  if(!list.length)h+='<div class="card note">'+(S.loading?"Loading buses…":"No more buses on this route "+(S.day?"tomorrow":"today")+".")+'</div>';
+  if(!list.length){
+    var late=S.day===0&&nowMin()>22*60+30;
+    if(S.loading)h+='<div class="card note">Loading buses…</div>';
+    else if(late)h+='<div class="card note">No more buses on this route today.</div>';
+    else h+='<div class="card alert">No buses found, which probably means the app could not read the timetable. Use Google Maps for now.'+gmLink()+'</div>';
+  }
   list.forEach(function(m){
     var L=live(m),st=tripStatus(m,L),ll=liveLine(m,L);
     h+='<button class="dep" data-a="open" data-id="'+m.d.id+'"><div class="top"><span class="time">'+fmt(m.dep)+'</span><span class="st '+st.c+'">'+st.t+'</span>'+
@@ -287,7 +319,7 @@ function homeHTML(){
       (ll?'<div class="live">'+(L?'<span class="pulse"></span>':'')+'<span>'+ll+'</span></div>':'')+leaveHTML(m,L)+'</button>';
   });
   if(S.used<S.cands.length&&!S.loading)h+='<button class="btn" data-a="more">Show later buses</button>';
-  h+='<footer>Live positions and timetables from <a href="https://bustimes.org">bustimes.org</a>, using Bus Open Data Service data. Weekday school-day extras may not run in the holidays.</footer></main>';
+  h+='<footer>'+(S.svcs?'Routes '+S.svcs.map(function(s){return s.line+" #"+s.id;}).join(", ")+' ('+S.svcSource+'). ':'')+'Live positions and timetables from <a href="https://bustimes.org">bustimes.org</a>, using Bus Open Data Service data. Weekday school-day extras may not run in the holidays.</footer></main>';
   return h;
 }
 function tripHTML(){
