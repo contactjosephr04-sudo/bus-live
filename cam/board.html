@@ -88,6 +88,7 @@ safe-buffer/index.js:
   // ---- Shared settings (must match the camera page) ----
   const TOPIC = 'boardcam-willow-7f3a/';
   const BROKERS = window.BOARDCAM_BROKERS || [
+    'wss://mqtt.eclipseprojects.io/mqtt',   // port 443, like a normal website: gets through school filters
     'wss://broker.hivemq.com:8884/mqtt',
     'wss://broker.emqx.io:8084/mqtt',
     'wss://test.mosquitto.org:8081/mqtt'
