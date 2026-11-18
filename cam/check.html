@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network check</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 16px; background: #fff; color: #111; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: #555; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  td { padding: 5px 6px; border-bottom: 1px solid #eee; }
+  td:first-child { width: 28px; font-size: 18px; text-align: center; }
+  .k { color: #777; font-size: 12px; }
+  #done { font-weight: 700; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h1>Network check</h1>
+<p>Wait about 15 seconds, then take a screenshot of the whole list and send it to Claude.</p>
+<table id="t"></table>
+<div id="done">Checking…</div>
+<script>
+(function () {
+  var T = document.getElementById('t');
+  function row(name, kind) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>⏳</td><td>' + name + ' <span class="k">' + kind + '</span></td>';
+    T.appendChild(tr);
+    return function (ok, note) { tr.firstChild.textContent = ok ? '✅' : '❌'; if (note) tr.lastChild.innerHTML += ' <span class="k">' + note + '</span>'; };
+  }
+  var jobs = [];
+  function web(name, url) {
+    var set = row(name, 'website');
+    jobs.push(new Promise(function (res) {
+      var done = false, t = setTimeout(function () { if (!done) { done = true; set(false, 'timeout'); res(); } }, 8000);
+      fetch(url, { mode: 'no-cors', cache: 'no-store' }).then(function () { if (!done) { done = true; clearTimeout(t); set(true); res(); } })
+        .catch(function () { if (!done) { done = true; clearTimeout(t); set(false); res(); } });
+    }));
+  }
+  function sock(name, url, proto) {
+    var set = row(name, 'live link');
+    jobs.push(new Promise(function (res) {
+      var done = false, ws;
+      var finish = function (ok, note) { if (done) return; done = true; set(ok, note); try { ws.close(); } catch (e) {} res(); };
+      var t = setTimeout(function () { finish(false, 'timeout'); }, 8000);
+      try { ws = proto ? new WebSocket(url, proto) : new WebSocket(url); } catch (e) { finish(false, 'error'); return; }
+      ws.onopen = function () { clearTimeout(t); finish(true); };
+      ws.onerror = function () { clearTimeout(t); finish(false); };
+    }));
+  }
+  function stun(name, url) {
+    var set = row(name, 'video route');
+    jobs.push(new Promise(function (res) {
+      var pc, done = false, kinds = {};
+      var finish = function () { if (done) return; done = true; set(!!kinds.srflx, Object.keys(kinds).join(', ') || 'none'); try { pc.close(); } catch (e) {} res(); };
+      try {
+        pc = new RTCPeerConnection({ iceServers: [{ urls: url }] });
+        pc.createDataChannel('x');
+        pc.onicecandidate = function (e) { if (!e.candidate) return finish(); var m = / typ (\w+)/.exec(e.candidate.candidate); if (m) kinds[m[1]] = 1; };
+        pc.createOffer().then(function (o) { return pc.setLocalDescription(o); });
+        setTimeout(finish, 6000);
+      } catch (e) { finish(); }
+    }));
+  }
+
+  web('google.com', 'https://www.google.com/favicon.ico');
+  web('github.io (this site)', location.origin + '/bus-live/cam/check.html');
+  web('unpkg.com', 'https://unpkg.com/');
+  web('jsdelivr.net', 'https://cdn.jsdelivr.net/');
+  web('ntfy.sh', 'https://ntfy.sh/');
+  web('Firebase (Google)', 'https://firebaseio.com/');
+  web('Supabase', 'https://supabase.com/');
+  web('Vercel', 'https://vercel.app/');
+  web('Netlify', 'https://netlify.app/');
+  web('Cloudflare workers.dev', 'https://workers.dev/');
+  web('Ably', 'https://rest.ably.io/time');
+  web('Pusher', 'https://pusher.com/');
+  web('Metered (relay)', 'https://www.metered.ca/');
+  sock('Eclipse (port 443)', 'wss://mqtt.eclipseprojects.io/mqtt', 'mqtt');
+  sock('HiveMQ (port 8884)', 'wss://broker.hivemq.com:8884/mqtt', 'mqtt');
+  sock('EMQX (port 8084)', 'wss://broker.emqx.io:8084/mqtt', 'mqtt');
+  sock('Mosquitto (port 8081)', 'wss://test.mosquitto.org:8081/mqtt', 'mqtt');
+  sock('ntfy live link', 'wss://ntfy.sh/boardcam-check-7f3a/ws');
+  sock('Echo test (port 443)', 'wss://echo.websocket.org/');
+  stun('Google video route', 'stun:stun.l.google.com:19302');
+  stun('Cloudflare video route', 'stun:stun.cloudflare.com:3478');
+
+  Promise.all(jobs).then(function () {
+    document.getElementById('done').textContent = 'Done. ' + navigator.userAgent.replace(/^Mozilla\/5\.0 /, '');
+  });
+})();
+</script>
+</body>
+</html>
