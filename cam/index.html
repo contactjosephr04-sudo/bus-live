@@ -23,6 +23,8 @@
   button { font: inherit; font-size: 18px; font-weight: 700; border: 0; border-radius: 14px;
     padding: 14px 20px; background: #2b2b2b; color: #fff; }
   button.primary { background: #6941c6; }
+  #frz { font-size: 22px; padding: 16px 30px; min-width: 190px; }
+  #frz.on { background: #d92d20; }
   #setup { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 18px; padding: 24px; text-align: center; background: #111; }
   #setup h1 { margin: 0; font-size: 28px; }
@@ -47,6 +49,7 @@
   </div>
 </div>
 <div id="bar" class="hide">
+  <button id="frz" class="primary">⏸ Freeze</button>
   <button id="flip">🔄 Switch camera</button>
   <button id="stop">✕ Stop</button>
 </div>
@@ -70,6 +73,7 @@
   let code = (params.get('c') || '').replace(/\D/g, '').slice(0, 6);
   $('code').value = code;
 
+  let frozenOnBoard = false;
   let stream = null, pc = null, session = null, answered = false, running = false, boardId = null, pendingCands = [];
   let facing = 'environment', wakeLock = null, offerTimer = null, failTimer = null, statTimer = null, bus = null;
 
@@ -214,6 +218,8 @@
       p.setRemoteDescription({ type: 'answer', sdp: m.sdp })
         .then(() => { pendingCands.forEach(c => p.addIceCandidate(c).catch(() => {})); pendingCands = []; })
         .catch(() => offer());
+    } else if (m.type === 'frozen' && m.session === session) {
+      showFrozen(!!m.on);
     } else if (m.type === 'cand' && m.session === session && pc) {
       if (pc.remoteDescription) pc.addIceCandidate(m.c).catch(() => {}); else pendingCands.push(m.c);
     } else if (m.type === 'board-up' && running) {
@@ -307,6 +313,18 @@
     // Give the services a moment to connect, then call the board.
     const t0 = Date.now();
     const wait = setInterval(() => { if (bus.up() || Date.now() - t0 > 4000) { clearInterval(wait); offer(); } }, 150);
+  };
+
+  function showFrozen(on) {
+    frozenOnBoard = on;
+    $('frz').textContent = on ? '▶ Unfreeze' : '⏸ Freeze';
+    $('frz').classList.toggle('on', on);
+  }
+  // Freeze the picture on the board from here, so you don't have to walk back to the laptop.
+  $('frz').onclick = () => {
+    if (!bus || !session) return;
+    showFrozen(!frozenOnBoard);
+    bus.pub(TOPIC + code + '/board', { type: 'freeze', on: frozenOnBoard, session: session });
   };
 
   $('flip').onclick = async () => {

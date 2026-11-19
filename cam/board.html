@@ -213,7 +213,7 @@
     $('code').textContent = code;
     $('url').textContent = CAM_URL.replace('https://', '');
     $('qr').innerHTML = '';
-    if (window.QRCode) new QRCode($('qr'), { text: CAM_URL + '?v=6&c=' + code, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M });
+    if (window.QRCode) new QRCode($('qr'), { text: CAM_URL + '?v=7&c=' + code, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M });
   }
 
   function announce() { if (bus) bus.pub(TOPIC + code + '/cam', { type: 'board-up', bid: BID }); }
@@ -333,6 +333,7 @@
     bus = makeBus((t, m) => {
       if (t !== TOPIC + code + '/board') return;
       if (m.type === 'offer') onOffer(m);
+      else if (m.type === 'freeze' && m.session === session) setFreeze(!!m.on);
       else if (m.type === 'cand') {
         if (pc && m.session === session && pc.remoteDescription) pc.addIceCandidate(m.c).catch(() => {});
         else (early[m.session] = early[m.session] || []).push(m.c);
@@ -347,13 +348,16 @@
     }, 1000);
   }
 
-  $('freeze').onclick = () => {
-    if (win.classList.toggle('frozen')) {
+  function setFreeze(on) {
+    if (on && !win.classList.contains('frozen')) {
       frozen.width = v.videoWidth || 1920; frozen.height = v.videoHeight || 1080;
       frozen.getContext('2d').drawImage(v, 0, 0, frozen.width, frozen.height);
-      $('freeze').textContent = '▶ Unfreeze'; $('freeze').classList.add('on');
-    } else { $('freeze').textContent = '⏸ Freeze'; $('freeze').classList.remove('on'); }
-  };
+    }
+    win.classList.toggle('frozen', on);
+    $('freeze').textContent = on ? '▶ Unfreeze' : '⏸ Freeze'; $('freeze').classList.toggle('on', on);
+    if (bus && session) bus.pub(TOPIC + code + '/cam/' + session, { type: 'frozen', on: on, session: session });
+  }
+  $('freeze').onclick = () => setFreeze(!win.classList.contains('frozen'));
   $('rot').onclick = () => $('rot').classList.toggle('on', win.classList.toggle('rot'));
   $('fill').onclick = () => $('fill').classList.toggle('on', win.classList.toggle('fill'));
   $('newcode').onclick = () => {
